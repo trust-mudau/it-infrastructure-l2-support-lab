@@ -1,0 +1,167 @@
+name: Scenario 08 - Windows Service and Event Log Failure
+
+on:
+  push:
+    paths:
+      - '.github/workflows/scenario-08-windows-service-eventlog.yml'
+  workflow_dispatch:
+
+jobs:
+  investigate-windows-service:
+    name: Investigate Windows service failure with Event Log
+    runs-on: windows-2025
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare service scenario
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'C:\l2lab\scenario08'
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-08'
+          New-Item -ItemType Directory -Force -Path $root,$evidence | Out-Null
+
+          $source = Join-Path $root 'L2DemoService.cs'
+          @'
+          using System;
+          using System.Diagnostics;
+          using System.IO;
+          using System.Net;
+          using System.Net.Sockets;
+          using System.ServiceProcess;
+
+          public class L2DemoService : ServiceBase
+          {
+              private TcpListener listener;
+              public L2DemoService() { ServiceName = "L2DemoService"; }
+              protected override void OnStart(string[] args)
+              {
+                  string config = @"C:\l2lab\scenario08\port.txt";
+                  if (!File.Exists(config))
+                  {
+                      EventLog.WriteEntry("L2DemoService", "Startup failed: required configuration file port.txt is missing.", EventLogEntryType.Error, 8001);
+                      Stop();
+                      return;
+                  }
+                  int port = int.Parse(File.ReadAllText(config).Trim());
+                  listener = new TcpListener(IPAddress.Loopback, port);
+                  listener.Start();
+                  EventLog.WriteEntry("L2DemoService", "Service started and listening on 127.0.0.1:" + port, EventLogEntryType.Information, 8000);
+              }
+              protected override void OnStop()
+              {
+                  if (listener != null) listener.Stop();
+                  EventLog.WriteEntry("L2DemoService", "Service stopped.", EventLogEntryType.Information, 8002);
+              }
+              public static void Main() { ServiceBase.Run(new L2DemoService()); }
+          }
+          '@ | Set-Content -Path $source
+
+          $csc = "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+          if (-not (Test-Path $csc)) { throw 'C# compiler not found.' }
+          & $csc /nologo /target:exe /out:"$root\L2DemoService.exe" /reference:System.ServiceProcess.dll $source
+          if ($LASTEXITCODE -ne 0) { throw 'Service compilation failed.' }
+
+          if (Get-Service -Name 'L2DemoService' -ErrorAction SilentlyContinue) { sc.exe delete L2DemoService | Out-Null; Start-Sleep -Seconds 1 }
+          if ([System.Diagnostics.EventLog]::SourceExists('L2DemoService')) { Remove-EventLog -Source 'L2DemoService' }
+          New-EventLog -LogName Application -Source 'L2DemoService'
+          sc.exe create L2DemoService binPath= "$root\L2DemoService.exe" start= demand DisplayName= "L2 Demo Support Service" | Out-Null
+
+      - name: Reproduce service failure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-08'
+          Start-Service L2DemoService -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          $svc = Get-Service L2DemoService
+          $svc | Format-List Name,DisplayName,Status,StartType | Out-String | Tee-Object -FilePath (Join-Path $evidence 'service-before.txt')
+          if ($svc.Status -ne 'Stopped') { throw 'Expected service to stop because configuration is missing.' }
+
+      - name: Gather L2 diagnostic evidence
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-08'
+          & {
+            '=== SERVICE ==='
+            Get-Service L2DemoService | Format-List *
+            ''
+            '=== SERVICE CONFIGURATION ==='
+            sc.exe qc L2DemoService
+            ''
+            '=== PROCESS CHECK ==='
+            Get-Process L2DemoService -ErrorAction SilentlyContinue
+            ''
+            '=== PORT CHECK ==='
+            Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object LocalPort -eq 8092 | Format-Table -AutoSize
+            ''
+            '=== APPLICATION EVENT LOG ==='
+            Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='L2DemoService'} -MaxEvents 10 | Select-Object TimeCreated,Id,LevelDisplayName,Message | Format-List
+            ''
+            '=== EXPECTED CONFIG ==='
+            Test-Path 'C:\l2lab\scenario08\port.txt'
+          } | Out-String -Width 240 | Tee-Object -FilePath (Join-Path $evidence 'investigation.txt')
+
+      - name: Apply minimum correction
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-08'
+          '8092' | Set-Content 'C:\l2lab\scenario08\port.txt'
+          @(
+            'Confirmed root cause: the Windows service depended on C:\l2lab\scenario08\port.txt, which was missing.'
+            'Corrective action: restored only the required configuration file with the approved lab port 8092.'
+            'The service binary and service account configuration were not changed.'
+          ) | Set-Content (Join-Path $evidence 'corrective-action.txt')
+          Start-Service L2DemoService
+          Start-Sleep -Seconds 2
+
+      - name: Verify service recovery independently
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-08'
+          $svc = Get-Service L2DemoService
+          if ($svc.Status -ne 'Running') { throw 'Service did not remain running.' }
+          $tcp = Test-NetConnection -ComputerName 127.0.0.1 -Port 8092 -WarningAction SilentlyContinue
+          if (-not $tcp.TcpTestSucceeded) { throw 'TCP 8092 validation failed.' }
+          $event = Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='L2DemoService'; Id=8000} -MaxEvents 1
+          if (-not $event) { throw 'Expected successful startup event not found.' }
+          & {
+            "Service state: $($svc.Status)"
+            "TCP 8092: $($tcp.TcpTestSucceeded)"
+            'Successful startup event:'
+            $event | Select-Object TimeCreated,Id,LevelDisplayName,Message | Format-List
+            'Scenario result: RESOLVED'
+          } | Out-String | Tee-Object -FilePath (Join-Path $evidence 'final-verification.txt')
+
+      - name: Write incident summary
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-08'
+          @'
+          Incident: INC-008 Windows Service Stops During Startup
+          Impact: A locally hosted support service could not remain running and its TCP endpoint was unavailable.
+          Confirmed root cause: the service-specific configuration file port.txt was missing. The application Event Log recorded Event ID 8001 identifying the missing dependency.
+          Corrective action: restored the required configuration file only; no broad service or security changes were made.
+          Verification: service state was Running, TCP 8092 accepted connections, and Event ID 8000 confirmed successful startup.
+          Escalation decision: no escalation required because the failure was isolated to a recoverable local configuration dependency and service health was independently verified.
+          '@ | Set-Content (Join-Path $evidence 'incident-summary.txt')
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-08-evidence
+          path: evidence-runtime/scenario-08/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup
+        if: always()
+        shell: pwsh
+        run: |
+          Stop-Service L2DemoService -Force -ErrorAction SilentlyContinue
+          sc.exe delete L2DemoService | Out-Null
+          if ([System.Diagnostics.EventLog]::SourceExists('L2DemoService')) { Remove-EventLog -Source 'L2DemoService' -ErrorAction SilentlyContinue }
+          Remove-Item 'C:\l2lab\scenario08' -Recurse -Force -ErrorAction SilentlyContinue
