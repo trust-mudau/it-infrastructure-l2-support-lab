@@ -25,6 +25,8 @@ jobs:
 
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server netcat-openbsd >/dev/null
+          sudo mkdir -p /run/sshd
+          sudo chmod 0755 /run/sshd
           sudo ssh-keygen -A
 
           if id l2support >/dev/null 2>&1; then
