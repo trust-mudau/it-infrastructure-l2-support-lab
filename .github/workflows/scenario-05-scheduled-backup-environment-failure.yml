@@ -1,0 +1,260 @@
+name: Scenario 05 - Scheduled Backup Environment Failure
+
+on:
+  push:
+    paths:
+      - '.github/workflows/scenario-05-scheduled-backup-environment-failure.yml'
+      - 'tickets/INC-005-scheduled-backup-environment-failure.md'
+  workflow_dispatch:
+
+jobs:
+  investigate-scheduled-backup:
+    name: Investigate scheduled backup environment failure
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare support scenario
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-05"
+          mkdir -p "$EVIDENCE"
+          sudo mkdir -p /opt/l2backup/source /var/backups/l2support /opt/l2backup/restore-test
+
+          printf 'customer-records\n' | sudo tee /opt/l2backup/source/customers.txt >/dev/null
+          printf 'configuration-version=5\n' | sudo tee /opt/l2backup/source/config.ini >/dev/null
+          sudo chown -R root:root /opt/l2backup /var/backups/l2support
+          sudo chmod 0755 /opt/l2backup /opt/l2backup/source /var/backups/l2support
+          sudo chmod 0644 /opt/l2backup/source/*
+
+          cat <<'SCRIPT' | sudo tee /opt/l2backup/run-backup.sh >/dev/null
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          : "${BACKUP_DEST:?BACKUP_DEST must be defined}"
+          SOURCE='/opt/l2backup/source'
+          ARCHIVE="$BACKUP_DEST/l2support-backup.tar.gz"
+          tar -czf "$ARCHIVE" -C "$SOURCE" .
+          sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+          printf 'backup_complete=%s\n' "$(date -u +%FT%TZ)"
+          printf 'archive=%s\n' "$ARCHIVE"
+          SCRIPT
+          sudo chmod 0755 /opt/l2backup/run-backup.sh
+
+          cat <<'SERVICE' | sudo tee /etc/systemd/system/l2backup.service >/dev/null
+          [Unit]
+          Description=L2 Support Scheduled Backup
+          After=network.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/opt/l2backup/run-backup.sh
+          User=root
+          SERVICE
+
+          cat <<'TIMER' | sudo tee /etc/systemd/system/l2backup.timer >/dev/null
+          [Unit]
+          Description=Trigger L2 Support Scheduled Backup
+
+          [Timer]
+          OnActiveSec=2s
+          AccuracySec=1s
+          Unit=l2backup.service
+
+          [Install]
+          WantedBy=timers.target
+          TIMER
+
+          sudo systemctl daemon-reload
+          sudo systemctl reset-failed l2backup.service 2>/dev/null || true
+
+          {
+            echo "Scenario prepared at $(date -u +%FT%TZ)"
+            cat /etc/os-release
+            echo
+            echo 'Expected backup destination: /var/backups/l2support'
+            echo 'Intentional fault: l2backup.service does not define BACKUP_DEST.'
+          } > "$EVIDENCE/environment.txt"
+
+      - name: Prove manual backup succeeds with interactive environment
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-05"
+          sudo rm -f /var/backups/l2support/l2support-backup.tar.gz*
+          sudo env BACKUP_DEST=/var/backups/l2support /opt/l2backup/run-backup.sh | tee "$EVIDENCE/manual-run.txt"
+          test -f /var/backups/l2support/l2support-backup.tar.gz
+          sudo rm -f /var/backups/l2support/l2support-backup.tar.gz*
+
+      - name: Reproduce scheduled backup failure
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-05"
+          sudo systemctl start l2backup.timer
+          sleep 4
+          set +e
+          sudo systemctl is-failed l2backup.service > "$EVIDENCE/service-failed-state.txt" 2>&1
+          FAILED_CODE=$?
+          test -f /var/backups/l2support/l2support-backup.tar.gz
+          ARCHIVE_PRESENT_CODE=$?
+          set -e
+
+          {
+            echo "systemctl is-failed exit code: $FAILED_CODE"
+            echo "archive-present test exit code: $ARCHIVE_PRESENT_CODE"
+          } | tee "$EVIDENCE/failure-codes.txt"
+
+          if [[ "$FAILED_CODE" -ne 0 || "$ARCHIVE_PRESENT_CODE" -eq 0 ]]; then
+            echo 'Expected scheduled backup failure was not reproduced.' >&2
+            exit 1
+          fi
+
+      - name: Gather L2 diagnostic evidence
+        shell: bash
+        run: |
+          set +e
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-05"
+          {
+            echo '=== TIMESTAMP ==='
+            date -u +%FT%TZ
+            echo
+            echo '=== TIMER STATUS ==='
+            sudo systemctl status l2backup.timer --no-pager -l
+            echo
+            echo '=== TIMER LIST ==='
+            sudo systemctl list-timers l2backup.timer --all --no-pager
+            echo
+            echo '=== SERVICE STATUS ==='
+            sudo systemctl status l2backup.service --no-pager -l
+            echo
+            echo '=== SERVICE JOURNAL ==='
+            sudo journalctl -u l2backup.service --no-pager -n 60 -o short-iso
+            echo
+            echo '=== SERVICE UNIT ==='
+            sudo systemctl cat l2backup.service
+            echo
+            echo '=== TIMER UNIT ==='
+            sudo systemctl cat l2backup.timer
+            echo
+            echo '=== BACKUP SCRIPT ==='
+            sudo sed -n '1,120p' /opt/l2backup/run-backup.sh
+            echo
+            echo '=== INTERACTIVE ENVIRONMENT EXAMPLE ==='
+            echo 'Manual execution used: BACKUP_DEST=/var/backups/l2support'
+            echo
+            echo '=== SERVICE ENVIRONMENT ==='
+            sudo systemctl show l2backup.service -p Environment -p EnvironmentFiles
+            echo
+            echo '=== SOURCE / DESTINATION PERMISSIONS ==='
+            ls -ld /opt/l2backup /opt/l2backup/source /var/backups/l2support
+            ls -l /opt/l2backup/source
+            echo
+            echo '=== DESTINATION CONTENTS ==='
+            ls -la /var/backups/l2support
+          } | tee "$EVIDENCE/investigation.txt"
+          set -e
+
+      - name: Apply minimum corrective action
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-05"
+          sudo mkdir -p /etc/l2backup
+          printf 'BACKUP_DEST=/var/backups/l2support\n' | sudo tee /etc/l2backup/backup.env >/dev/null
+          sudo chmod 0644 /etc/l2backup/backup.env
+
+          cat <<'SERVICE' | sudo tee /etc/systemd/system/l2backup.service >/dev/null
+          [Unit]
+          Description=L2 Support Scheduled Backup
+          After=network.target
+
+          [Service]
+          Type=oneshot
+          EnvironmentFile=/etc/l2backup/backup.env
+          ExecStart=/opt/l2backup/run-backup.sh
+          User=root
+          SERVICE
+
+          sudo systemctl daemon-reload
+          sudo systemctl reset-failed l2backup.service
+          sudo systemctl start l2backup.service
+
+          {
+            echo 'Confirmed cause: scheduled service did not receive the BACKUP_DEST variable available during the successful manual run.'
+            echo 'Corrective action: defined BACKUP_DEST in a root-managed EnvironmentFile and referenced it from l2backup.service.'
+            echo 'No backup-script code change was required.'
+          } | tee "$EVIDENCE/corrective-action.txt"
+
+      - name: Verify backup integrity and restore
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-05"
+          ARCHIVE='/var/backups/l2support/l2support-backup.tar.gz'
+          CHECKSUM="$ARCHIVE.sha256"
+          test -s "$ARCHIVE"
+          test -s "$CHECKSUM"
+          cd /var/backups/l2support
+          sha256sum -c "$(basename "$CHECKSUM")" | tee "$EVIDENCE/checksum-verification.txt"
+
+          sudo rm -rf /opt/l2backup/restore-test
+          sudo mkdir -p /opt/l2backup/restore-test
+          sudo tar -xzf "$ARCHIVE" -C /opt/l2backup/restore-test
+          sudo diff -ru /opt/l2backup/source /opt/l2backup/restore-test | tee "$EVIDENCE/restore-diff.txt"
+
+          {
+            echo "Service result: $(sudo systemctl show l2backup.service -p Result --value)"
+            echo "Archive bytes: $(stat -c %s "$ARCHIVE")"
+            echo "Checksum: PASS"
+            echo "Restore comparison: PASS"
+            echo 'Scenario result: RESOLVED'
+          } | tee "$EVIDENCE/final-verification.txt"
+
+      - name: Write incident summary
+        shell: bash
+        run: |
+          cat > "$GITHUB_WORKSPACE/evidence-runtime/scenario-05/incident-summary.txt" <<'EOF'
+          Incident: INC-005 Scheduled Backup Job Fails While Manual Run Succeeds
+          Impact: The scheduled backup produced no current archive even though the backup script worked during manual execution.
+          Confirmed root cause: The interactive manual run supplied BACKUP_DEST, but the systemd service environment did not define that variable, causing the scheduled process to exit before creating an archive.
+          Corrective action: Added a root-managed EnvironmentFile defining BACKUP_DEST and referenced it from the systemd service.
+          Verification: The service completed successfully, an archive and checksum were produced, SHA-256 verification passed, and a test restore matched the source data.
+          Escalation decision: No escalation required because the cause was local service-environment configuration, the correction was within lab authorization, and backup recoverability was independently verified.
+          EOF
+          cat "$GITHUB_WORKSPACE/evidence-runtime/scenario-05/incident-summary.txt"
+
+      - name: Add workflow summary
+        shell: bash
+        run: |
+          {
+            echo '## INC-005 — Scheduled Backup Environment Failure'
+            echo
+            echo '**Result:** Resolved in lab'
+            echo
+            echo '- Proved the backup script succeeded manually with an interactive environment variable.'
+            echo '- Reproduced failure through a real systemd timer/service execution path.'
+            echo '- Used systemctl, list-timers, journalctl and systemctl show to compare execution contexts.'
+            echo '- Corrected the service environment with an EnvironmentFile.'
+            echo '- Verified archive creation, SHA-256 integrity and a successful restore comparison.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sanitized scenario evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-05-evidence
+          path: evidence-runtime/scenario-05/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup temporary timer and backup lab
+        if: always()
+        shell: bash
+        run: |
+          sudo systemctl stop l2backup.timer l2backup.service 2>/dev/null || true
+          sudo rm -f /etc/systemd/system/l2backup.timer /etc/systemd/system/l2backup.service
+          sudo rm -rf /etc/l2backup /opt/l2backup /var/backups/l2support
+          sudo systemctl daemon-reload
+          sudo systemctl reset-failed l2backup.service 2>/dev/null || true
