@@ -1,0 +1,24 @@
+name: GreenCo-aligned IT Support Mini-Pack Validation
+
+on:
+  push:
+    paths:
+      - 'projects/greenco-it-support-mini-pack/**'
+      - '.github/workflows/greenco-mini-pack-validation.yml'
+  workflow_dispatch:
+
+jobs:
+  validate-support-records:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Validate synthetic asset, ticket and access-review records
+        run: python3 projects/greenco-it-support-mini-pack/scripts/validate_pack.py
+      - name: Upload validation report
+        uses: actions/upload-artifact@v4
+        with:
+          name: greenco-mini-pack-validation-report
+          path: projects/greenco-it-support-mini-pack/reports/validation-report.md
+          if-no-files-found: error
+          retention-days: 30

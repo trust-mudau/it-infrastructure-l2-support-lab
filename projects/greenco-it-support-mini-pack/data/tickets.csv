@@ -1,0 +1,9 @@
+ticket_id,priority,category,summary,created_at,resolved_at,sla_hours,status,escalation,resolution
+GC-T001,P2,Outlook,User cannot send mail from Outlook,2026-09-10T08:00:00,2026-09-10T09:20:00,4,Resolved,No,Validated connectivity and account state then rebuilt Outlook profile in scenario
+GC-T002,P3,Teams,Teams microphone not detected,2026-09-10T09:15:00,2026-09-10T11:00:00,8,Resolved,No,Checked device permissions and Teams audio device selection
+GC-T003,P2,SharePoint,User receives access denied on department site,2026-09-10T10:00:00,2026-09-10T12:30:00,4,Resolved,No,Validated request and mapped required group access in scenario
+GC-T004,P2,Onboarding,New starter requires account device and baseline access,2026-09-11T07:30:00,2026-09-11T10:00:00,4,Resolved,No,Completed synthetic onboarding checklist and recorded assigned asset
+GC-T005,P3,Hardware,Printer unavailable for finance user,2026-09-11T08:45:00,2026-09-11T10:15:00,8,Resolved,No,Checked connectivity queue and device state
+GC-T006,P1,Security,User reports suspected phishing message,2026-09-11T11:00:00,2026-09-11T11:20:00,1,Escalated,Yes,Preserved message details advised no interaction and escalated to security workflow
+GC-T007,P3,Access Review,Quarterly access review finds obsolete membership,2026-09-12T08:00:00,2026-09-12T13:00:00,8,Resolved,No,Removed synthetic obsolete membership after owner decision and recorded verification
+GC-T008,P4,Intranet,Department requests updated policy link,2026-09-12T09:00:00,2026-09-12T15:00:00,24,Resolved,No,Updated synthetic content record after approval and checked navigation

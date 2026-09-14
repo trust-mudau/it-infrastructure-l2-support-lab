@@ -1,0 +1,9 @@
+asset_id,asset_type,make_model,serial,user,department,status,assigned_date,warranty_end,location
+GC-001,Laptop,Dell Latitude 5450,SYN-LAT-001,Amina Ndlovu,Finance,Assigned,2026-06-03,2029-06-02,Johannesburg
+GC-002,Laptop,HP ProBook 440,SYN-HP-002,Thabo Molefe,Digital and Data,Assigned,2026-07-15,2029-07-14,Johannesburg
+GC-003,Monitor,Dell P2425H,SYN-MON-003,Amina Ndlovu,Finance,Assigned,2026-06-03,2029-06-02,Johannesburg
+GC-004,Laptop,Lenovo ThinkPad E14,SYN-LEN-004,Lebo Dlamini,Commercial,Assigned,2026-08-01,2029-07-31,Johannesburg
+GC-005,Laptop,Dell Latitude 5440,SYN-LAT-005,,IT,In Stock,,2028-12-10,Johannesburg
+GC-006,Headset,Jabra Evolve2 40,SYN-JAB-006,Thabo Molefe,Digital and Data,Assigned,2026-07-15,2028-07-14,Johannesburg
+GC-007,Laptop,HP EliteBook 640,SYN-HP-007,Nandi Khumalo,People Operations,Assigned,2026-05-12,2029-05-11,Johannesburg
+GC-008,Laptop,Lenovo ThinkPad E14,SYN-LEN-008,Former User,Sales,Returned,2026-03-10,2029-03-09,Johannesburg

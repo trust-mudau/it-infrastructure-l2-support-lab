@@ -1,0 +1,7 @@
+review_id,user,resource_or_group,business_owner,decision,action_status,rationale
+AR-001,Amina Ndlovu,Finance-Standard,Finance Manager,Keep,Verified,Role still requires baseline Finance access
+AR-002,Thabo Molefe,IT-Support,IT Manager,Keep,Verified,Current support responsibilities require access
+AR-003,Lebo Dlamini,Finance-Standard,Finance Manager,Remove,Completed,User moved to Commercial and no longer requires Finance access
+AR-004,Nandi Khumalo,HR-Confidential,People Operations Manager,Keep,Verified,Approved job-role access remains valid
+AR-005,Former User,Sales-Standard,Sales Manager,Remove,Completed,User has left organisation and access must not remain
+AR-006,Thabo Molefe,Global-Admin,IT Manager,Remove,Completed,Excess privilege not justified for routine support duties
