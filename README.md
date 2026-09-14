@@ -106,8 +106,3 @@ projects/             compact role-targeted support scenario packs
 reports/              final technical/job-fit reporting
 ```
 
-## Truthful portfolio/CV positioning
-
-> Built and validated a 15-incident Windows/Linux L2 technical-support lab using GitHub-hosted environments, covering service and Event Log analysis, TCP/IP/name resolution, SSH, permissions, storage, package dependencies, scheduled tasks, backup/restore, security triage, virtual-disk snapshot recovery and Azure/Bicep network-security configuration; documented each scenario through tickets, root-cause analysis, verification and escalation decisions.
-
-Do **not** describe this repository as production infrastructure, VMware/Hyper-V, live Azure administration, or production Zendesk/Freshdesk experience.
