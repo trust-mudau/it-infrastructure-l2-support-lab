@@ -2,50 +2,116 @@
 
 **Priority:** P2  
 **Category:** Linux / systemd / service availability  
-**Platform:** GitHub-hosted Ubuntu runner  
-**Status:** Scenario configured — execution evidence pending
+**Platform:** GitHub-hosted Ubuntu 24.04.5 LTS runner  
+**Status:** **Lab validated — resolved**
 
 ## User / business impact
 
-A small internal application is unavailable after a deployment. Users receive connection errors and the expected TCP port is not listening. The service is managed by `systemd`, so the support engineer must determine whether the failure is caused by the application, service definition, permissions, process state, port binding or another OS-level condition.
+A small internal application was unavailable after a deployment. Users would have received connection errors because the `systemd`-managed process was not running and TCP port `8090` was not listening.
 
-## Initial symptoms
+## Initial symptoms reproduced
 
-- application endpoint is unavailable
-- `systemd` service does not remain active
-- expected TCP port `8090` is not listening
+- `systemctl start l2support.service` returned control, but the service immediately entered `failed`
+- `systemctl is-active` returned non-active with exit code `3`
+- HTTP request to `127.0.0.1:8090` failed with curl exit code `7`
+- no process was serving the expected port
 
-## Known environment
+## Investigation
 
-- Ubuntu GitHub-hosted runner
-- service name: `l2support.service`
-- application path: `/opt/l2lab/service.sh`
-- application content path: `/opt/l2lab/www`
-- expected endpoint: `http://127.0.0.1:8090/`
+Evidence was gathered before remediation using:
 
-## L2 objective
+```bash
+systemctl status l2support.service --no-pager -l
+systemctl cat l2support.service
+journalctl -u l2support.service --no-pager -n 60 -o short-iso
+ls -l /opt/l2lab/service.sh
+stat /opt/l2lab/service.sh
+namei -l /opt/l2lab/service.sh
+ps -ef
+ss -ltnp
+```
 
-Reproduce the service-start failure, gather evidence before remediation, use `systemctl` and `journalctl` to identify the root cause, apply the minimum safe change, restart the service and independently verify application availability.
+### Key findings
 
-## Investigation requirements
+`systemctl status` reported:
 
-Capture at minimum:
+```text
+Active: failed (Result: exit-code)
+ExecStart=/opt/l2lab/service.sh (code=exited, status=203/EXEC)
+```
 
-- OS and kernel
-- service status
-- service unit contents
-- recent journal entries
-- process state
-- listening ports
-- file ownership and permissions
-- corrective action
-- post-fix service state
-- HTTP verification
+`journalctl` confirmed the service's main process exited with `status=203/EXEC`.
 
-## Escalation rule
+The unit file referenced:
 
-Escalate if the service definition and local permissions are correct but the process still crashes, if logs indicate an application defect, if required dependencies are unavailable, if the port is owned by an unrelated critical service, or if remediation requires a change outside the technician's authorization.
+```text
+ExecStart=/opt/l2lab/service.sh
+```
 
-## Evidence location
+The target file existed but had mode:
 
-The workflow will upload a `scenario-03-evidence` artifact after execution.
+```text
+-rw-r--r--
+0644
+```
+
+Therefore the service target was present and readable, but not executable.
+
+## Root cause
+
+The `ExecStart` target `/opt/l2lab/service.sh` did not have execute permission. `systemd` could locate the file but could not execute it, causing the service to fail with `203/EXEC`.
+
+## Corrective action
+
+Applied the minimum required permission change:
+
+```bash
+sudo chmod 0755 /opt/l2lab/service.sh
+sudo systemctl restart l2support.service
+```
+
+No application-code change or service-unit redesign was required.
+
+## Verification
+
+Post-remediation checks confirmed:
+
+```text
+Service state: active
+Listening address: 127.0.0.1:8090
+Application content verified: PASS
+Scenario result: RESOLVED
+```
+
+An HTTP request returned:
+
+```text
+L2 support application healthy - scenario 03
+```
+
+## Escalation decision
+
+**No escalation required.**
+
+The fault was isolated to an OS-level execution-permission issue within the support scope. The service was restored using a low-risk local change and independently verified at the service, TCP-port and HTTP layers.
+
+Escalation would have been appropriate if:
+
+- the executable permission was correct but `203/EXEC` persisted
+- logs indicated an application crash or dependency defect
+- the required port was owned by an unrelated critical service
+- remediation required an unauthorized production change
+
+## Evidence
+
+GitHub Actions run:
+
+`https://github.com/trust-mudau/it-infrastructure-l2-support-lab/actions/runs/34873490939`
+
+Evidence artifact:
+
+- `scenario-03-evidence`
+- artifact ID: `10359952520`
+- SHA-256 digest: `622d347a626c7b430e73828a29fa2fe05c93cae98d12eec46039fd25a0364b1f`
+
+The lab environment was cleaned up after evidence capture.
