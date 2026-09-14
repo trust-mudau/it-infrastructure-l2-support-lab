@@ -2,56 +2,86 @@
 
 **Priority:** P2  
 **Category:** Windows / Local groups / NTFS permissions / Access control  
-**Platform:** GitHub-hosted Windows runner  
-**Status:** Scenario configured — execution evidence pending
+**Platform:** GitHub-hosted Windows Server 2025 Datacenter runner  
+**Status:** **Lab validated — resolved**
 
 ## User / business impact
 
-A support technician is a member of the approved local support group but receives **Access Denied** when attempting to read a protected application-support file. Other system functions remain healthy. The incident requires distinguishing group membership problems from NTFS ACL inheritance, explicit deny entries, ownership, path issues, and application-layer errors.
+A support technician was a member of the approved local support group but received **Access Denied** when attempting to read protected application-support data.
 
-## Initial symptoms
+## Executed symptoms
 
-- approved support group exists
-- technician is a member of that group
-- group has an allow permission on the support folder
-- direct file access fails with Access Denied
-- no evidence of disk or service failure
+- local group `L2-App-Support` existed
+- current account was confirmed as a member of the group
+- the group had an NTFS `Modify` allow ACE
+- `Get-Content` against `C:\l2lab\secure-data\support-notes.txt` failed with `Access to the path ... is denied`
+- no disk, service, or path-availability issue was involved
 
-## Known environment
+## Investigation performed
 
-- GitHub-hosted Windows Server runner
-- protected path: `C:\l2lab\secure-data`
-- protected file: `support-notes.txt`
-- local group: `L2-App-Support`
-- current runner account is added to the group
-- group receives an NTFS allow ACE
-- an intentional explicit deny ACE is applied directly to the current account
+The lab captured:
 
-## L2 objective
+- Windows Server 2025 Datacenter / build 26100
+- current Windows identity
+- `whoami /groups`
+- local-group configuration and membership
+- folder and file ACLs with `Get-Acl`
+- access rules including inheritance and allow/deny types
+- `icacls` output for both directory and file
 
-Reproduce the access failure, capture identity and local-group evidence, inspect effective ACL structure with PowerShell and `icacls`, identify why the expected group-based allow is not sufficient, apply the minimum least-privilege correction, and independently verify that access is restored without granting administrative or broad Everyone permissions.
+The investigation confirmed a direct explicit deny ACE:
 
-## Investigation requirements
+```text
+runneradmin:(OI)(CI)(DENY)(RD)
+```
 
-Capture at minimum:
+while the approved group retained:
 
-- Windows edition/version
-- current identity
-- local support-group membership
-- folder and file ACLs
-- `icacls` output
-- inheritance state
-- failed access result
-- confirmed conflicting ACE
-- corrective action
-- post-fix ACL
-- successful read/write verification
-- escalation decision
+```text
+L2-App-Support:(OI)(CI)(M)
+```
 
-## Escalation rule
+The direct deny took precedence over access granted through group membership.
 
-Escalate if the deny ACE is required by policy, the ACL is centrally managed by Group Policy or another configuration-management system, ownership is controlled by another team, the path contains regulated/sensitive data outside technician authorization, access remains denied after the ACL is corrected, or a domain/identity issue is suspected beyond the local system.
+## Root cause
 
-## Evidence location
+A direct explicit `ReadData` deny ACE was assigned to the current user. That deny overrode the user's group-based allow permission and caused the observed access failure.
 
-The workflow will upload a `scenario-06-evidence` artifact after execution.
+## Corrective action
+
+Removed **only** the conflicting direct deny ACE.
+
+No `Everyone` permission, broad Full Control grant, administrator bypass, ownership takeover, or unrelated ACL redesign was used.
+
+The approved `L2-App-Support` group retained its `Modify` permission.
+
+## Independent verification
+
+Post-remediation checks confirmed:
+
+- approved group membership: **PASS**
+- direct deny removed: **PASS**
+- group-based Modify grant preserved: **PASS**
+- protected file read: **PASS**
+- protected file write: **PASS**
+- final scenario result: **RESOLVED**
+
+## Escalation decision
+
+**No escalation required.**
+
+The cause was a local ACL conflict, the minimum correction was within lab authorization, and access was restored without broadening permissions.
+
+Escalation would have been required if the deny was policy-mandated, centrally managed, involved regulated data outside technician scope, or if access remained broken after the local ACL conflict was corrected.
+
+## Evidence
+
+GitHub Actions run:
+
+`https://github.com/trust-mudau/it-infrastructure-l2-support-lab/actions/runs/34874603327`
+
+Uploaded artifact:
+
+`scenario-06-evidence` — artifact ID `10360990929`
+
+Evidence includes the failed access output, environment details, identity/group/ACL investigation, corrective action, final verification, and incident summary.
