@@ -14,7 +14,8 @@ This repository is designed to build practical troubleshooting evidence for remo
 **Scenario 02:** Windows hostname/name-resolution failure — **lab validated and resolved**  
 **Scenario 03:** Linux `systemd` service execution failure — **lab validated and resolved**  
 **Scenario 04:** Linux disk/storage exhaustion — **lab validated and resolved**  
-**Scenario 05:** Scheduled backup environment failure — **lab validated and resolved**
+**Scenario 05:** Scheduled backup environment failure — **lab validated and resolved**  
+**Scenario 06:** Windows NTFS access-denied / ACL conflict — **lab validated and resolved**
 
 ## Evidence standard
 
@@ -105,6 +106,7 @@ templates/           Reusable support-document templates
 | INC-003 | systemd service fails with `203/EXEC` | Linux | systemd, journalctl, processes, permissions, sockets, service recovery | Lab validated |
 | INC-004 | Application fails because filesystem reaches 100% utilization | Linux | df, df -i, du, storage analysis, logs, systemd, recovery | Lab validated |
 | INC-005 | Scheduled backup fails while manual run succeeds | Linux | systemd timers, environment context, backup, integrity, restore testing | Lab validated |
+| INC-006 | Access Denied despite correct support-group membership | Windows | local groups, NTFS ACLs, Get-Acl, icacls, least privilege | Lab validated |
 
 Additional scenarios are added only when they are ready to be executed and documented.
 
@@ -228,10 +230,31 @@ See:
 - `incidents/INC-005-RCA-scheduled-backup-environment-failure.md`
 - `kb/KB-005-systemd-scheduled-job-manual-run-succeeds.md`
 
+### INC-006 — Windows NTFS Access Denied despite correct group membership
+
+Executed on Windows Server 2025 Datacenter using PowerShell and a real local Windows group / NTFS ACL.
+
+- created and verified the `L2-App-Support` local group
+- confirmed the current support account was a member of the group
+- granted the group NTFS `Modify` permission on a protected support directory
+- reproduced a real `Access to the path ... is denied` failure
+- used `whoami`, `Get-LocalGroupMember`, `Get-Acl` and `icacls` to investigate identity and permissions
+- confirmed a direct explicit `ReadData` deny ACE existed on the user while the group retained its allow permission
+- identified ACL precedence as the cause rather than missing group membership
+- removed only the conflicting direct deny ACE
+- preserved the group-based `Modify` grant rather than using a broad `Everyone` or Full Control workaround
+- independently verified protected-file read and write access after remediation
+
+See:
+
+- `tickets/INC-006-windows-ntfs-access-denied.md`
+- `incidents/INC-006-RCA-windows-ntfs-access-denied.md`
+- `kb/KB-006-windows-ntfs-access-denied-group-membership.md`
+
 ## Truthful CV positioning
 
 Current safe description:
 
-> Built a scenario-driven Windows/Linux L2 technical-support lab using GitHub-hosted environments and structured incident documentation; executed backup/recovery, scheduled-job, Windows name-resolution, Linux systemd and disk-capacity incidents using Bash, PowerShell, systemctl, journalctl, timers, df/du, TCP diagnostics, permissions analysis, checksum/restore validation, root-cause analysis and escalation judgement.
+> Built a scenario-driven Windows/Linux L2 technical-support lab using GitHub-hosted environments and structured incident documentation; executed backup/recovery, scheduled-job, Windows name-resolution and NTFS-permissions incidents plus Linux systemd and disk-capacity failures using Bash, PowerShell, systemctl, journalctl, timers, df/du, TCP diagnostics, Get-Acl/icacls, checksum/restore validation, least-privilege remediation, root-cause analysis and escalation judgement.
 
 Do not describe this repository as production infrastructure experience.
