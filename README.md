@@ -12,7 +12,8 @@ This repository is designed to build practical troubleshooting evidence for remo
 **Platform baseline:** Windows and Linux hosted-runner capture — executed successfully  
 **Scenario 01:** Linux backup permission failure — **lab validated and resolved**  
 **Scenario 02:** Windows hostname/name-resolution failure — **lab validated and resolved**  
-**Scenario 03:** Linux `systemd` service execution failure — **lab validated and resolved**
+**Scenario 03:** Linux `systemd` service execution failure — **lab validated and resolved**  
+**Scenario 04:** Linux disk/storage exhaustion — **lab validated and resolved**
 
 ## Evidence standard
 
@@ -101,6 +102,7 @@ templates/           Reusable support-document templates
 | INC-001 | Backup job fails because destination is not writable | Linux | Bash, permissions, logs, backup/recovery, RCA | Lab validated |
 | INC-002 | Application works by IP but fails by hostname | Windows | PowerShell, TCP/IP, name resolution, service validation | Lab validated |
 | INC-003 | systemd service fails with `203/EXEC` | Linux | systemd, journalctl, processes, permissions, sockets, service recovery | Lab validated |
+| INC-004 | Application fails because filesystem reaches 100% utilization | Linux | df, df -i, du, storage analysis, logs, systemd, recovery | Lab validated |
 
 Additional scenarios are added only when they are ready to be executed and documented.
 
@@ -182,10 +184,31 @@ See:
 - `incidents/INC-003-RCA-linux-systemd-service-failure.md`
 - `kb/KB-003-systemd-203-exec-service-failure.md`
 
+### INC-004 — Linux disk/storage exhaustion
+
+Executed on Ubuntu 24.04.5 LTS using an isolated 20 MiB temporary filesystem.
+
+- reproduced a real `No space left on device` failure during application startup
+- confirmed the filesystem reached `100%` block utilization
+- checked `df -i` and ruled out inode exhaustion at only `1%` inode use
+- used `du` and `find` to identify an 18 MiB stale application log as the dominant storage consumer
+- connected the storage condition to the failed `systemd` service using `systemctl` and `journalctl`
+- applied an approved minimum cleanup to the confirmed stale log
+- reduced filesystem utilization from `100%` to `25%`
+- verified the 4 MiB runtime cache could be created successfully
+- confirmed the service was active and `python3` listened on `127.0.0.1:8091`
+- independently verified expected HTTP application content
+
+See:
+
+- `tickets/INC-004-linux-disk-exhaustion.md`
+- `incidents/INC-004-RCA-linux-disk-exhaustion.md`
+- `kb/KB-004-linux-disk-full-service-failure.md`
+
 ## Truthful CV positioning
 
 Current safe description:
 
-> Built a scenario-driven Windows/Linux L2 technical-support lab using GitHub-hosted environments and structured incident documentation; executed backup/recovery, Windows name-resolution and Linux systemd service incidents using Bash, PowerShell, systemctl, journalctl, TCP diagnostics, permissions analysis, integrity testing, root-cause analysis and escalation judgement.
+> Built a scenario-driven Windows/Linux L2 technical-support lab using GitHub-hosted environments and structured incident documentation; executed backup/recovery, Windows name-resolution, Linux systemd and disk-capacity incidents using Bash, PowerShell, systemctl, journalctl, df/du, TCP diagnostics, permissions analysis, integrity testing, root-cause analysis and escalation judgement.
 
 Do not describe this repository as production infrastructure experience.
