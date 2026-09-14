@@ -1,0 +1,82 @@
+name: Platform Baseline - Windows and Linux
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/platform-baseline.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-baseline:
+    name: Capture Linux support baseline
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Capture Linux system evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p evidence-runtime/platform/linux
+          {
+            echo '=== TIMESTAMP ==='
+            date -u +%FT%TZ
+            echo '=== OS ==='
+            cat /etc/os-release
+            echo '=== KERNEL ==='
+            uname -a
+            echo '=== IDENTITY ==='
+            id
+            echo '=== IP ADDRESSES ==='
+            ip -brief address
+            echo '=== ROUTES ==='
+            ip route
+            echo '=== DNS CONFIG ==='
+            cat /etc/resolv.conf
+            echo '=== STORAGE ==='
+            df -h
+            echo '=== MEMORY ==='
+            free -h
+          } > evidence-runtime/platform/linux/baseline.txt
+          cat evidence-runtime/platform/linux/baseline.txt
+      - name: Upload Linux baseline evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-platform-baseline
+          path: evidence-runtime/platform/linux/
+          retention-days: 30
+
+  windows-baseline:
+    name: Capture Windows support baseline
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Capture Windows system evidence
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path 'evidence-runtime/platform/windows' | Out-Null
+          $out = 'evidence-runtime/platform/windows/baseline.txt'
+          "=== TIMESTAMP ===" | Set-Content $out
+          (Get-Date).ToUniversalTime().ToString('o') | Add-Content $out
+          "=== OS ===" | Add-Content $out
+          Get-ComputerInfo | Select-Object WindowsProductName,WindowsVersion,OsBuildNumber,OsArchitecture | Format-List | Out-String | Add-Content $out
+          "=== IP CONFIGURATION ===" | Add-Content $out
+          Get-NetIPConfiguration | Format-List InterfaceAlias,IPv4Address,IPv4DefaultGateway,DNSServer | Out-String | Add-Content $out
+          "=== DNS CLIENT ===" | Add-Content $out
+          Get-DnsClientServerAddress -AddressFamily IPv4 | Format-Table -AutoSize | Out-String | Add-Content $out
+          "=== STORAGE ===" | Add-Content $out
+          Get-Volume | Select-Object DriveLetter,FileSystemLabel,FileSystem,SizeRemaining,Size | Format-Table -AutoSize | Out-String | Add-Content $out
+          "=== TOP SERVICES SAMPLE ===" | Add-Content $out
+          Get-Service | Select-Object -First 20 Name,Status,StartType | Format-Table -AutoSize | Out-String | Add-Content $out
+          Get-Content $out
+      - name: Upload Windows baseline evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-platform-baseline
+          path: evidence-runtime/platform/windows/
+          retention-days: 30
