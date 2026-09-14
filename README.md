@@ -8,8 +8,9 @@ This repository is designed to build practical troubleshooting evidence for remo
 
 ## Current status
 
-**Phase:** Scenario lab initialized  
-**Scenario 01:** Linux backup failure — configured for GitHub Actions execution
+**Phase:** Active scenario execution  
+**Platform baseline:** Windows and Linux hosted-runner capture — executed successfully  
+**Scenario 01:** Linux backup permission failure — **lab validated and resolved**
 
 ## Evidence standard
 
@@ -94,7 +95,8 @@ templates/           Reusable support-document templates
 
 | ID | Scenario | Platform | Primary skills | Status |
 |---|---|---|---|---|
-| INC-001 | Backup job fails because destination is not writable | Linux | Bash, permissions, logs, backup/recovery, RCA | Workflow configured |
+| BASELINE | Windows/Linux support baseline | Windows + Linux | OS, IP, DNS, storage, services | Executed |
+| INC-001 | Backup job fails because destination is not writable | Linux | Bash, permissions, logs, backup/recovery, RCA | Lab validated |
 
 Additional scenarios are added only when they are ready to be executed and documented.
 
@@ -112,10 +114,32 @@ Each scenario follows the same L2 workflow:
 8. Document cause, resolution and escalation decision.
 9. Convert reusable findings into a knowledge-base article where appropriate.
 
+## Validated evidence to date
+
+### INC-001 — Linux backup permission failure
+
+Executed on Ubuntu 24.04.5 LTS using GitHub Actions.
+
+- reproduced non-zero backup failure with exit code `13`
+- inspected identity, directory permissions and filesystem capacity before remediation
+- ruled out storage exhaustion
+- confirmed destination mode `0555` blocked writes
+- applied minimum permission correction to `0750`
+- reran backup successfully
+- validated SHA-256 integrity
+- restored the archive and compared restored data with the source
+- documented the incident, root cause and escalation decision
+
+See:
+
+- `tickets/INC-001-linux-backup-failure.md`
+- `incidents/INC-001-RCA-linux-backup-permission-failure.md`
+- `kb/KB-001-linux-backup-destination-not-writable.md`
+
 ## Truthful CV positioning
 
-Until additional scenarios are executed, the safe description is:
+Current safe description:
 
-> Built a scenario-driven Windows/Linux L2 technical-support lab using GitHub-hosted environments, structured tickets and technical documentation to practice infrastructure troubleshooting, backup/recovery, root-cause analysis and escalation workflows.
+> Built a scenario-driven Windows/Linux L2 technical-support lab using GitHub-hosted environments, structured tickets and technical documentation; executed a Linux backup incident covering permission diagnosis, recovery, integrity validation, root-cause analysis and escalation judgement.
 
 Do not describe this repository as production infrastructure experience.
