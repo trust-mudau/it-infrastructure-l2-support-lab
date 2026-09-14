@@ -27,7 +27,6 @@ jobs:
           fi
           az version | tee "$EVIDENCE/azure-cli-version.txt"
           az bicep version | tee "$EVIDENCE/bicep-version.txt"
-
           cat > "$LAB/main.bicep" <<'BICEP'
           param location string = 'southafricanorth'
           resource nsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
@@ -72,23 +71,16 @@ jobs:
       - name: Reproduce configuration-level HTTPS failure
         shell: bash
         run: |
-          set +e
+          set -Eeuo pipefail
           EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-14"
           LAB="$RUNNER_TEMP/scenario14"
-          python3 - "$LAB/main.json" > "$EVIDENCE/rule-check-before.txt" 2>&1 <<'PY'
-          import json,sys
-          p=json.load(open(sys.argv[1]))
-          rules=p['resources'][0]['properties']['securityRules']
-          allow443=[r for r in rules if r['properties'].get('direction')=='Inbound' and r['properties'].get('access')=='Allow' and r['properties'].get('protocol') in ('Tcp','*') and r['properties'].get('destinationPortRange') in ('443','*')]
-          print('inbound_allow_443_count=',len(allow443))
-          if not allow443:
-              print('CONFIGURATION FAILURE: no inbound Allow rule permits TCP 443 before the deny-all rule.')
-              raise SystemExit(44)
-          PY
-          RC=$?
-          set -e
-          echo "rule_check_exit=$RC" | tee "$EVIDENCE/failure-code.txt"
-          if [[ $RC -ne 44 ]]; then echo 'Expected missing HTTPS rule was not reproduced.' >&2; exit 1; fi
+          COUNT="$(jq '[.resources[0].properties.securityRules[] | select(.properties.direction=="Inbound" and .properties.access=="Allow" and (.properties.protocol=="Tcp" or .properties.protocol=="*") and (.properties.destinationPortRange=="443" or .properties.destinationPortRange=="*"))] | length' "$LAB/main.json")"
+          echo "inbound_allow_443_count=$COUNT" | tee "$EVIDENCE/rule-check-before.txt"
+          if [[ "$COUNT" -ne 0 ]]; then
+            echo 'Expected missing HTTPS rule was not reproduced.' >&2
+            exit 1
+          fi
+          echo 'CONFIGURATION FAILURE: no inbound Allow rule permits TCP 443 before the deny-all rule.' | tee -a "$EVIDENCE/rule-check-before.txt"
 
       - name: Gather cloud configuration evidence
         shell: bash
@@ -104,13 +96,7 @@ jobs:
             cat "$LAB/main.bicep"
             echo
             echo '=== COMPILED NSG RULES ==='
-            python3 - "$LAB/main.json" <<'PY'
-          import json,sys
-          p=json.load(open(sys.argv[1]))
-          for r in p['resources'][0]['properties']['securityRules']:
-              pr=r['properties']
-              print(r['name'], 'priority='+str(pr['priority']), 'access='+pr['access'], 'direction='+pr['direction'], 'protocol='+pr['protocol'], 'destinationPortRange='+pr['destinationPortRange'], 'source='+pr['sourceAddressPrefix'])
-          PY
+            jq -r '.resources[0].properties.securityRules[] | [.name, (.properties.priority|tostring), .properties.access, .properties.direction, .properties.protocol, .properties.destinationPortRange, .properties.sourceAddressPrefix] | @tsv' "$LAB/main.json"
             echo
             echo '=== FAILED RULE CHECK ==='
             cat "$EVIDENCE/rule-check-before.txt"
@@ -122,14 +108,27 @@ jobs:
           set -Eeuo pipefail
           EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-14"
           LAB="$RUNNER_TEMP/scenario14"
-          python3 - "$LAB/main.bicep" <<'PY'
-          from pathlib import Path
-          import sys
-          p=Path(sys.argv[1])
-          s=p.read_text()
-          marker="""                {
-                  name: 'Deny-All-Inbound'"""
-          rule="""                {
+          cat > "$LAB/main-fixed.bicep" <<'BICEP'
+          param location string = 'southafricanorth'
+          resource nsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
+            name: 'nsg-support-web'
+            location: location
+            properties: {
+              securityRules: [
+                {
+                  name: 'Allow-SSH-Admin'
+                  properties: {
+                    priority: 100
+                    access: 'Allow'
+                    direction: 'Inbound'
+                    protocol: 'Tcp'
+                    sourcePortRange: '*'
+                    destinationPortRange: '22'
+                    sourceAddressPrefix: '10.10.0.0/24'
+                    destinationAddressPrefix: '*'
+                  }
+                }
+                {
                   name: 'Allow-HTTPS-Web'
                   properties: {
                     priority: 200
@@ -142,12 +141,25 @@ jobs:
                     destinationAddressPrefix: '*'
                   }
                 }
-"""
-          if marker not in s: raise SystemExit('marker missing')
-          p.write_text(s.replace(marker, rule+marker))
-          PY
-          az bicep build --file "$LAB/main.bicep" --outfile "$LAB/main-fixed.json"
-          cp "$LAB/main.bicep" "$EVIDENCE/nsg-after.bicep"
+                {
+                  name: 'Deny-All-Inbound'
+                  properties: {
+                    priority: 4096
+                    access: 'Deny'
+                    direction: 'Inbound'
+                    protocol: '*'
+                    sourcePortRange: '*'
+                    destinationPortRange: '*'
+                    sourceAddressPrefix: '*'
+                    destinationAddressPrefix: '*'
+                  }
+                }
+              ]
+            }
+          }
+          BICEP
+          az bicep build --file "$LAB/main-fixed.bicep" --outfile "$LAB/main-fixed.json"
+          cp "$LAB/main-fixed.bicep" "$EVIDENCE/nsg-after.bicep"
           cp "$LAB/main-fixed.json" "$EVIDENCE/nsg-after.json"
           {
             echo 'Confirmed root cause: the NSG definition had no inbound Allow rule for TCP 443, so the explicit deny-all rule would block HTTPS.'
@@ -161,19 +173,19 @@ jobs:
           set -Eeuo pipefail
           EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-14"
           LAB="$RUNNER_TEMP/scenario14"
-          python3 - "$LAB/main-fixed.json" <<'PY' | tee "$EVIDENCE/final-verification.txt"
-          import json,sys
-          p=json.load(open(sys.argv[1]))
-          rules=p['resources'][0]['properties']['securityRules']
-          allow=[r for r in rules if r['name']=='Allow-HTTPS-Web' and r['properties']['access']=='Allow' and r['properties']['direction']=='Inbound' and r['properties']['protocol']=='Tcp' and r['properties']['destinationPortRange']=='443']
-          deny=[r for r in rules if r['name']=='Deny-All-Inbound']
-          assert allow and deny
-          assert allow[0]['properties']['priority'] < deny[0]['properties']['priority']
-          print('Bicep build: PASS')
-          print('HTTPS allow rule present: PASS')
-          print('HTTPS rule evaluated before deny-all by priority: PASS')
-          print('Scenario result: CONFIGURATION RESOLVED')
-          PY
+          HTTPS_PRIORITY="$(jq -r '.resources[0].properties.securityRules[] | select(.name=="Allow-HTTPS-Web") | .properties.priority' "$LAB/main-fixed.json")"
+          DENY_PRIORITY="$(jq -r '.resources[0].properties.securityRules[] | select(.name=="Deny-All-Inbound") | .properties.priority' "$LAB/main-fixed.json")"
+          COUNT="$(jq '[.resources[0].properties.securityRules[] | select(.name=="Allow-HTTPS-Web" and .properties.access=="Allow" and .properties.direction=="Inbound" and .properties.protocol=="Tcp" and .properties.destinationPortRange=="443")] | length' "$LAB/main-fixed.json")"
+          [[ "$COUNT" -eq 1 ]]
+          [[ "$HTTPS_PRIORITY" -lt "$DENY_PRIORITY" ]]
+          {
+            echo 'Bicep build: PASS'
+            echo 'HTTPS allow rule present: PASS'
+            echo "HTTPS priority=$HTTPS_PRIORITY"
+            echo "Deny-all priority=$DENY_PRIORITY"
+            echo 'HTTPS rule evaluated before deny-all by priority: PASS'
+            echo 'Scenario result: CONFIGURATION RESOLVED'
+          } | tee "$EVIDENCE/final-verification.txt"
 
       - name: Write incident summary
         shell: bash
