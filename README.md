@@ -13,7 +13,8 @@ This repository is designed to build practical troubleshooting evidence for remo
 **Scenario 01:** Linux backup permission failure — **lab validated and resolved**  
 **Scenario 02:** Windows hostname/name-resolution failure — **lab validated and resolved**  
 **Scenario 03:** Linux `systemd` service execution failure — **lab validated and resolved**  
-**Scenario 04:** Linux disk/storage exhaustion — **lab validated and resolved**
+**Scenario 04:** Linux disk/storage exhaustion — **lab validated and resolved**  
+**Scenario 05:** Scheduled backup environment failure — **lab validated and resolved**
 
 ## Evidence standard
 
@@ -103,6 +104,7 @@ templates/           Reusable support-document templates
 | INC-002 | Application works by IP but fails by hostname | Windows | PowerShell, TCP/IP, name resolution, service validation | Lab validated |
 | INC-003 | systemd service fails with `203/EXEC` | Linux | systemd, journalctl, processes, permissions, sockets, service recovery | Lab validated |
 | INC-004 | Application fails because filesystem reaches 100% utilization | Linux | df, df -i, du, storage analysis, logs, systemd, recovery | Lab validated |
+| INC-005 | Scheduled backup fails while manual run succeeds | Linux | systemd timers, environment context, backup, integrity, restore testing | Lab validated |
 
 Additional scenarios are added only when they are ready to be executed and documented.
 
@@ -205,10 +207,31 @@ See:
 - `incidents/INC-004-RCA-linux-disk-exhaustion.md`
 - `kb/KB-004-linux-disk-full-service-failure.md`
 
+### INC-005 — Scheduled backup environment failure
+
+Executed on Ubuntu 24.04.5 LTS using a real temporary `systemd` timer and oneshot service.
+
+- proved the same backup script succeeded manually when `BACKUP_DEST` was explicitly supplied
+- triggered the scheduled path with `l2backup.timer`
+- reproduced a failed scheduled service and confirmed no archive was created
+- used `systemctl status`, `systemctl list-timers`, `journalctl`, `systemctl cat` and `systemctl show` to compare execution contexts
+- confirmed the service environment did not contain the required `BACKUP_DEST` variable
+- ruled out source/destination permission problems
+- corrected the service with a root-managed `EnvironmentFile`
+- reran the service successfully without changing backup-script logic
+- created and validated the backup archive with SHA-256
+- restored the archive into a separate directory and verified restored data matched the source
+
+See:
+
+- `tickets/INC-005-scheduled-backup-environment-failure.md`
+- `incidents/INC-005-RCA-scheduled-backup-environment-failure.md`
+- `kb/KB-005-systemd-scheduled-job-manual-run-succeeds.md`
+
 ## Truthful CV positioning
 
 Current safe description:
 
-> Built a scenario-driven Windows/Linux L2 technical-support lab using GitHub-hosted environments and structured incident documentation; executed backup/recovery, Windows name-resolution, Linux systemd and disk-capacity incidents using Bash, PowerShell, systemctl, journalctl, df/du, TCP diagnostics, permissions analysis, integrity testing, root-cause analysis and escalation judgement.
+> Built a scenario-driven Windows/Linux L2 technical-support lab using GitHub-hosted environments and structured incident documentation; executed backup/recovery, scheduled-job, Windows name-resolution, Linux systemd and disk-capacity incidents using Bash, PowerShell, systemctl, journalctl, timers, df/du, TCP diagnostics, permissions analysis, checksum/restore validation, root-cause analysis and escalation judgement.
 
 Do not describe this repository as production infrastructure experience.
