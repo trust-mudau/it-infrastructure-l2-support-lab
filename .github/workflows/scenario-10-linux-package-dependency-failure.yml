@@ -1,0 +1,143 @@
+name: Scenario 10 - Linux Package Dependency Failure
+
+on:
+  push:
+    paths:
+      - '.github/workflows/scenario-10-linux-package-dependency-failure.yml'
+  workflow_dispatch:
+
+jobs:
+  investigate-package:
+    name: Investigate Linux package dependency failure
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build intentionally broken package
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-10"
+          ROOT="$RUNNER_TEMP/l2demo-broken"
+          mkdir -p "$EVIDENCE" "$ROOT/DEBIAN" "$ROOT/usr/local/bin"
+          cat > "$ROOT/DEBIAN/control" <<'EOF'
+          Package: l2demo-app
+          Version: 1.0
+          Section: utils
+          Priority: optional
+          Architecture: all
+          Depends: l2missing-runtime (>= 9.9)
+          Maintainer: L2 Support Lab <lab@example.invalid>
+          Description: Intentionally broken dependency package for L2 support lab
+          EOF
+          cat > "$ROOT/usr/local/bin/l2demo-app" <<'EOF'
+          #!/usr/bin/env bash
+          echo 'l2demo-app=healthy'
+          EOF
+          chmod 0755 "$ROOT/usr/local/bin/l2demo-app"
+          dpkg-deb --build "$ROOT" "$RUNNER_TEMP/l2demo-app-broken.deb" >/dev/null
+          dpkg-deb -I "$RUNNER_TEMP/l2demo-app-broken.deb" | tee "$EVIDENCE/package-metadata-before.txt"
+
+      - name: Reproduce dependency failure
+        shell: bash
+        run: |
+          set +e
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-10"
+          sudo dpkg -i "$RUNNER_TEMP/l2demo-app-broken.deb" > "$EVIDENCE/dpkg-install-before.txt" 2>&1
+          RC=$?
+          set -e
+          echo "dpkg_exit=$RC" | tee "$EVIDENCE/failure-code.txt"
+          if [[ $RC -eq 0 ]]; then echo 'Expected package dependency failure was not reproduced.' >&2; exit 1; fi
+
+      - name: Gather package manager evidence
+        shell: bash
+        run: |
+          set +e
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-10"
+          {
+            echo '=== DPKG PACKAGE STATE ==='
+            dpkg-query -W -f='${Package} ${Version} ${Status}\n' l2demo-app
+            echo
+            echo '=== DPKG AUDIT ==='
+            dpkg --audit
+            echo
+            echo '=== APT CHECK ==='
+            sudo apt-get check
+            echo
+            echo '=== MISSING DEPENDENCY LOOKUP ==='
+            apt-cache policy l2missing-runtime
+            echo
+            echo '=== ORIGINAL INSTALL OUTPUT ==='
+            cat "$EVIDENCE/dpkg-install-before.txt"
+          } | tee "$EVIDENCE/investigation.txt"
+          set -e
+
+      - name: Apply controlled package correction
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-10"
+          sudo dpkg --remove l2demo-app >/dev/null 2>&1 || true
+          FIXED="$RUNNER_TEMP/l2demo-fixed"
+          mkdir -p "$FIXED/DEBIAN" "$FIXED/usr/local/bin"
+          cat > "$FIXED/DEBIAN/control" <<'EOF'
+          Package: l2demo-app
+          Version: 1.1
+          Section: utils
+          Priority: optional
+          Architecture: all
+          Depends: bash
+          Maintainer: L2 Support Lab <lab@example.invalid>
+          Description: Corrected dependency package for L2 support lab
+          EOF
+          cat > "$FIXED/usr/local/bin/l2demo-app" <<'EOF'
+          #!/usr/bin/env bash
+          echo 'l2demo-app=healthy'
+          EOF
+          chmod 0755 "$FIXED/usr/local/bin/l2demo-app"
+          dpkg-deb --build "$FIXED" "$RUNNER_TEMP/l2demo-app-fixed.deb" >/dev/null
+          sudo dpkg -i "$RUNNER_TEMP/l2demo-app-fixed.deb" | tee "$EVIDENCE/dpkg-install-after.txt"
+          {
+            echo 'Confirmed root cause: l2demo-app 1.0 declared a dependency on unavailable package l2missing-runtime >= 9.9.'
+            echo 'Corrective action: removed the broken package and deployed corrected package metadata using the real runtime dependency bash.'
+          } | tee "$EVIDENCE/corrective-action.txt"
+
+      - name: Verify package health
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-10"
+          dpkg-query -W -f='${Package} ${Version} ${Status}\n' l2demo-app | tee "$EVIDENCE/package-state-after.txt"
+          sudo apt-get check | tee "$EVIDENCE/apt-check-after.txt"
+          l2demo-app | tee "$EVIDENCE/app-after.txt"
+          grep -q 'install ok installed' "$EVIDENCE/package-state-after.txt"
+          grep -q 'l2demo-app=healthy' "$EVIDENCE/app-after.txt"
+          echo 'Scenario result: RESOLVED' | tee "$EVIDENCE/final-verification.txt"
+
+      - name: Write incident summary
+        shell: bash
+        run: |
+          cat > "$GITHUB_WORKSPACE/evidence-runtime/scenario-10/incident-summary.txt" <<'EOF'
+          Incident: INC-010 Linux Package Install Leaves Application Unconfigured
+          Impact: application package deployment failed and dpkg left the package in an unconfigured state.
+          Confirmed root cause: package metadata referenced an unavailable dependency, l2missing-runtime >= 9.9.
+          Corrective action: removed the broken package and installed corrected version 1.1 with a valid runtime dependency.
+          Verification: dpkg reported install ok installed, apt-get check returned clean, and the installed command executed successfully.
+          Escalation decision: no escalation required in the lab; in production, a vendor-supplied bad dependency declaration would be escalated to packaging/release engineering rather than locally edited on managed systems.
+          EOF
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-10-evidence
+          path: evidence-runtime/scenario-10/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          sudo dpkg --remove l2demo-app >/dev/null 2>&1 || true
