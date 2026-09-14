@@ -1,0 +1,245 @@
+name: Scenario 06 - Windows NTFS Access Denied
+
+on:
+  push:
+    paths:
+      - '.github/workflows/scenario-06-windows-ntfs-access-denied.yml'
+      - 'tickets/INC-006-windows-ntfs-access-denied.md'
+  workflow_dispatch:
+
+jobs:
+  investigate-windows-acl:
+    name: Investigate Windows NTFS access denied
+    runs-on: windows-2025
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare support scenario
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-06'
+          New-Item -ItemType Directory -Force -Path $evidence | Out-Null
+
+          $labRoot = 'C:\l2lab'
+          $securePath = Join-Path $labRoot 'secure-data'
+          $file = Join-Path $securePath 'support-notes.txt'
+          New-Item -ItemType Directory -Force -Path $securePath | Out-Null
+          Set-Content -Path $file -Value 'Authorized L2 support data - scenario 06'
+
+          $groupName = 'L2-App-Support'
+          if (Get-LocalGroup -Name $groupName -ErrorAction SilentlyContinue) {
+            Remove-LocalGroup -Name $groupName
+          }
+          New-LocalGroup -Name $groupName -Description 'Scenario 06 least-privilege application support group' | Out-Null
+          Add-LocalGroupMember -Group $groupName -Member $env:USERNAME
+
+          $currentAccount = "$env:COMPUTERNAME\$env:USERNAME"
+          $groupAccount = "$env:COMPUTERNAME\$groupName"
+
+          $acl = New-Object System.Security.AccessControl.DirectorySecurity
+          $inherit = [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
+          $propagation = [System.Security.AccessControl.PropagationFlags]::None
+          $allow = [System.Security.AccessControl.AccessControlType]::Allow
+          $deny = [System.Security.AccessControl.AccessControlType]::Deny
+
+          $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('SYSTEM','FullControl',$inherit,$propagation,$allow)))
+          $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('BUILTIN\Administrators','FullControl',$inherit,$propagation,$allow)))
+          $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($groupAccount,'Modify',$inherit,$propagation,$allow)))
+
+          # Intentional fault: direct deny overrides the group-based allow for the same user.
+          $denyRule = New-Object System.Security.AccessControl.FileSystemAccessRule($currentAccount,'ReadData',$inherit,$propagation,$deny)
+          $acl.AddAccessRule($denyRule)
+          Set-Acl -Path $securePath -AclObject $acl
+
+          @(
+            "Scenario prepared at $((Get-Date).ToUniversalTime().ToString('o'))"
+            "Computer: $env:COMPUTERNAME"
+            "Current account: $currentAccount"
+            "Support group: $groupAccount"
+            "Protected path: $securePath"
+            'Intentional fault: explicit ReadData deny applied directly to current account.'
+          ) | Set-Content (Join-Path $evidence 'environment.txt')
+
+      - name: Reproduce access denied
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-06'
+          $file = 'C:\l2lab\secure-data\support-notes.txt'
+
+          $failed = $false
+          try {
+            Get-Content -Path $file -ErrorAction Stop | Out-String | Set-Content (Join-Path $evidence 'unexpected-read-before.txt')
+          }
+          catch {
+            $failed = $true
+            $_ | Out-String | Set-Content (Join-Path $evidence 'access-denied-before.txt')
+            Write-Host "Expected access failure: $($_.Exception.Message)"
+          }
+
+          if (-not $failed) {
+            throw 'Expected Access Denied condition was not reproduced.'
+          }
+
+      - name: Gather L2 diagnostic evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-06'
+          $securePath = 'C:\l2lab\secure-data'
+          $file = Join-Path $securePath 'support-notes.txt'
+          $groupName = 'L2-App-Support'
+
+          & {
+            '=== TIMESTAMP ==='
+            (Get-Date).ToUniversalTime().ToString('o')
+            ''
+            '=== WINDOWS VERSION ==='
+            Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsBuildNumber, OsArchitecture | Format-List
+            ''
+            '=== CURRENT IDENTITY ==='
+            whoami
+            whoami /groups
+            ''
+            '=== LOCAL SUPPORT GROUP ==='
+            Get-LocalGroup -Name $groupName | Format-List *
+            Get-LocalGroupMember -Group $groupName | Format-Table -AutoSize
+            ''
+            '=== DIRECTORY ACL ==='
+            Get-Acl -Path $securePath | Format-List Path,Owner,AccessToString,AreAccessRulesProtected
+            ''
+            '=== DIRECTORY ACCESS RULES ==='
+            (Get-Acl -Path $securePath).Access | Select-Object IdentityReference,FileSystemRights,AccessControlType,IsInherited,InheritanceFlags,PropagationFlags | Format-Table -AutoSize
+            ''
+            '=== FILE ACL ==='
+            Get-Acl -Path $file | Format-List Path,Owner,AccessToString
+            ''
+            '=== ICACLS ==='
+            icacls $securePath
+            icacls $file
+          } | Out-String -Width 240 | Tee-Object -FilePath (Join-Path $evidence 'investigation.txt')
+
+      - name: Apply minimum least-privilege correction
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-06'
+          $securePath = 'C:\l2lab\secure-data'
+          $currentAccount = "$env:COMPUTERNAME\$env:USERNAME"
+
+          $acl = Get-Acl -Path $securePath
+          $matchingDenies = @($acl.Access | Where-Object {
+            $_.IdentityReference.Value -eq $currentAccount -and
+            $_.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Deny -and
+            ($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::ReadData)
+          })
+
+          if ($matchingDenies.Count -ne 1) {
+            throw "Expected exactly one direct ReadData deny rule for $currentAccount; found $($matchingDenies.Count)."
+          }
+
+          $acl.RemoveAccessRuleSpecific($matchingDenies[0])
+          Set-Acl -Path $securePath -AclObject $acl
+
+          @(
+            'Confirmed cause: a direct explicit ReadData deny ACE on the current account overrode access granted through the approved L2-App-Support group.'
+            'Corrective action: removed only the conflicting direct deny ACE.'
+            'The group-based Modify grant was preserved; no Everyone/FullControl shortcut was added.'
+          ) | Tee-Object -FilePath (Join-Path $evidence 'corrective-action.txt')
+
+      - name: Verify access restoration independently
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-06'
+          $securePath = 'C:\l2lab\secure-data'
+          $file = Join-Path $securePath 'support-notes.txt'
+          $groupName = 'L2-App-Support'
+          $currentAccount = "$env:COMPUTERNAME\$env:USERNAME"
+          $groupAccount = "$env:COMPUTERNAME\$groupName"
+
+          $content = Get-Content -Path $file -Raw
+          if ($content -notmatch 'Authorized L2 support data') { throw 'Expected protected file content was not readable after remediation.' }
+
+          Add-Content -Path $file -Value 'write-verification=PASS'
+          $finalContent = Get-Content -Path $file -Raw
+          if ($finalContent -notmatch 'write-verification=PASS') { throw 'Modify/write verification failed.' }
+
+          $members = Get-LocalGroupMember -Group $groupName
+          if (-not ($members.Name -contains $currentAccount)) { throw 'Current account is not in the expected support group.' }
+
+          $rules = (Get-Acl -Path $securePath).Access
+          $groupModify = $rules | Where-Object {
+            $_.IdentityReference.Value -eq $groupAccount -and
+            $_.AccessControlType -eq 'Allow' -and
+            ($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Modify)
+          }
+          if (-not $groupModify) { throw 'Expected group-based Modify permission is missing.' }
+
+          $remainingDirectDeny = $rules | Where-Object {
+            $_.IdentityReference.Value -eq $currentAccount -and $_.AccessControlType -eq 'Deny'
+          }
+          if ($remainingDirectDeny) { throw 'A direct deny remains after remediation.' }
+
+          @(
+            "Identity: $currentAccount"
+            "Approved group membership: PASS ($groupName)"
+            'Direct deny removed: PASS'
+            'Group-based Modify grant preserved: PASS'
+            'Protected file read: PASS'
+            'Protected file write: PASS'
+            'Scenario result: RESOLVED'
+            ''
+            'Final ACL:'
+            (icacls $securePath | Out-String)
+          ) | Tee-Object -FilePath (Join-Path $evidence 'final-verification.txt')
+
+      - name: Write incident summary
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-06'
+          @'
+          Incident: INC-006 Windows NTFS Access Denied Despite Correct Group Membership
+          Impact: An approved support account could not access protected application-support data even though it belonged to the expected local support group.
+          Confirmed root cause: A direct explicit ReadData deny ACE on the user overrode the group-based allow permission.
+          Corrective action: Removed only the conflicting direct deny ACE and retained the approved least-privilege group-based Modify grant.
+          Verification: Group membership remained correct, no direct deny remained, the protected file could be read and modified, and the final ACL preserved the support-group permission.
+          Escalation decision: No escalation required because the ACL conflict was local, the correction was authorized within the lab, and access was independently verified without broadening permissions.
+          '@ | Set-Content (Join-Path $evidence 'incident-summary.txt')
+          Get-Content (Join-Path $evidence 'incident-summary.txt')
+
+      - name: Add workflow summary
+        shell: pwsh
+        run: |
+          @'
+          ## INC-006 — Windows NTFS Access Denied
+
+          **Result:** Resolved in lab
+
+          - Reproduced a real Windows file-access denial.
+          - Verified approved local-group membership.
+          - Inspected NTFS ACLs with `Get-Acl` and `icacls`.
+          - Identified an explicit user deny overriding a group allow.
+          - Removed only the conflicting ACE rather than granting broad access.
+          - Verified read/write access and preserved least-privilege group permissions.
+          '@ | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload sanitized scenario evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-06-evidence
+          path: evidence-runtime/scenario-06/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup temporary local group and files
+        if: always()
+        shell: pwsh
+        run: |
+          Remove-Item -Path 'C:\l2lab' -Recurse -Force -ErrorAction SilentlyContinue
+          if (Get-LocalGroup -Name 'L2-App-Support' -ErrorAction SilentlyContinue) {
+            Remove-LocalGroup -Name 'L2-App-Support'
+          }
