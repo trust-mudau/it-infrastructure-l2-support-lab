@@ -1,0 +1,119 @@
+name: Scenario 13 - Virtual Disk Snapshot Recovery
+
+on:
+  push:
+    paths:
+      - '.github/workflows/scenario-13-qcow2-snapshot-recovery.yml'
+  workflow_dispatch:
+
+jobs:
+  investigate-snapshot:
+    name: Validate qcow2 snapshot and rollback recovery
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare virtual disk and baseline snapshot
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-13"
+          mkdir -p "$EVIDENCE"
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq qemu-utils >/dev/null
+          DISK="$RUNNER_TEMP/l2vm-disk.qcow2"
+          qemu-img create -f qcow2 "$DISK" 8M | tee "$EVIDENCE/qemu-create.txt"
+          qemu-io -f qcow2 -c 'write -P 0x41 0 4096' "$DISK" | tee "$EVIDENCE/baseline-write.txt"
+          qemu-io -f qcow2 -c 'read -P 0x41 0 4096' "$DISK" | tee "$EVIDENCE/baseline-verify.txt"
+          qemu-img snapshot -c clean-state "$DISK"
+          qemu-img snapshot -l "$DISK" | tee "$EVIDENCE/snapshot-list-before.txt"
+          qemu-img info "$DISK" | tee "$EVIDENCE/disk-info-before.txt"
+
+      - name: Simulate guest disk corruption after change
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-13"
+          DISK="$RUNNER_TEMP/l2vm-disk.qcow2"
+          qemu-io -f qcow2 -c 'write -P 0x42 0 4096' "$DISK" | tee "$EVIDENCE/corruption-write.txt"
+          qemu-io -f qcow2 -c 'read -P 0x42 0 4096' "$DISK" | tee "$EVIDENCE/corruption-verify.txt"
+          set +e
+          qemu-io -f qcow2 -c 'read -P 0x41 0 4096' "$DISK" > "$EVIDENCE/baseline-check-after-corruption.txt" 2>&1
+          RC=$?
+          set -e
+          echo "baseline_check_exit=$RC" | tee "$EVIDENCE/failure-code.txt"
+          if [[ $RC -eq 0 ]]; then echo 'Expected baseline mismatch after corruption was not reproduced.' >&2; exit 1; fi
+
+      - name: Gather virtualization evidence
+        shell: bash
+        run: |
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-13"
+          DISK="$RUNNER_TEMP/l2vm-disk.qcow2"
+          {
+            echo '=== QEMU VERSION ==='
+            qemu-img --version
+            echo
+            echo '=== DISK INFO ==='
+            qemu-img info "$DISK"
+            echo
+            echo '=== SNAPSHOTS ==='
+            qemu-img snapshot -l "$DISK"
+            echo
+            echo '=== CURRENT BLOCK PATTERN CHECK ==='
+            qemu-io -f qcow2 -c 'read -P 0x42 0 4096' "$DISK"
+            echo
+            echo '=== ORIGINAL BASELINE CHECK RESULT ==='
+            cat "$EVIDENCE/baseline-check-after-corruption.txt"
+          } | tee "$EVIDENCE/investigation.txt"
+
+      - name: Revert to clean snapshot
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-13"
+          DISK="$RUNNER_TEMP/l2vm-disk.qcow2"
+          qemu-img snapshot -a clean-state "$DISK"
+          {
+            echo 'Confirmed condition: active virtual-disk state no longer matched the clean baseline pattern after the simulated change.'
+            echo 'Recovery action: reverted the qcow2 disk to the named clean-state internal snapshot.'
+            echo 'Scope note: this validates virtual-disk snapshot/rollback mechanics with QEMU qcow2; it is not a claim of production VMware or Hyper-V administration.'
+          } | tee "$EVIDENCE/recovery-action.txt"
+
+      - name: Verify snapshot recovery
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-13"
+          DISK="$RUNNER_TEMP/l2vm-disk.qcow2"
+          qemu-io -f qcow2 -c 'read -P 0x41 0 4096' "$DISK" | tee "$EVIDENCE/baseline-after-rollback.txt"
+          qemu-img check "$DISK" | tee "$EVIDENCE/qemu-img-check.txt"
+          qemu-img snapshot -l "$DISK" | tee "$EVIDENCE/snapshot-list-after.txt"
+          {
+            echo 'Baseline block pattern restored: PASS'
+            echo 'qemu-img consistency check: PASS'
+            echo 'Snapshot remains identifiable: PASS'
+            echo 'Scenario result: RECOVERED'
+          } | tee "$EVIDENCE/final-verification.txt"
+
+      - name: Write incident summary
+        shell: bash
+        run: |
+          cat > "$GITHUB_WORKSPACE/evidence-runtime/scenario-13/incident-summary.txt" <<'EOF'
+          Incident: INC-013 Virtual Disk State Corrupted After Change; Snapshot Recovery Required
+          Impact: a simulated virtual disk no longer matched its known-good baseline after a change.
+          Platform: QEMU qcow2 tooling on a GitHub-hosted Ubuntu runner; no claim of live VMware/Hyper-V administration.
+          Evidence: qemu-img info/snapshot output and qemu-io pattern verification proved the active state differed from the baseline.
+          Recovery: reverted the qcow2 disk to the clean-state internal snapshot.
+          Verification: the original block pattern was restored and qemu-img check reported the image consistent.
+          Escalation decision: in production, snapshot rollback requires change approval and data-loss assessment if newer writes may need preservation; escalate when application owners or backup teams must approve point-in-time recovery.
+          EOF
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-13-evidence
+          path: evidence-runtime/scenario-13/
+          if-no-files-found: error
+          retention-days: 30
