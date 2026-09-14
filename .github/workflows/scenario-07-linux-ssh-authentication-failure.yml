@@ -1,0 +1,258 @@
+name: Scenario 07 - Linux SSH Authentication Failure
+
+on:
+  push:
+    paths:
+      - '.github/workflows/scenario-07-linux-ssh-authentication-failure.yml'
+      - 'tickets/INC-007-linux-ssh-key-authentication-failure.md'
+  workflow_dispatch:
+
+jobs:
+  investigate-ssh:
+    name: Investigate Linux SSH authentication failure
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare support scenario
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-07"
+          mkdir -p "$EVIDENCE"
+
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server netcat-openbsd >/dev/null
+          sudo ssh-keygen -A
+
+          if id l2support >/dev/null 2>&1; then
+            sudo userdel -r l2support || true
+          fi
+          sudo useradd -m -s /bin/bash l2support
+          printf 'l2support:Temp-Lab-Password-Only!7\n' | sudo chpasswd
+
+          mkdir -p "$RUNNER_TEMP/scenario07-client"
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/scenario07-client/id_ed25519"
+
+          sudo mkdir -p /home/l2support/.ssh
+          sudo cp "$RUNNER_TEMP/scenario07-client/id_ed25519.pub" /home/l2support/.ssh/authorized_keys
+          sudo chown -R l2support:l2support /home/l2support/.ssh
+          sudo chmod 0700 /home/l2support/.ssh
+          # Intentional security fault: StrictModes will reject this writable authorized_keys file.
+          sudo chmod 0666 /home/l2support/.ssh/authorized_keys
+
+          cat <<'CONF' | sudo tee /etc/ssh/sshd_config_l2lab >/dev/null
+          Port 2222
+          ListenAddress 127.0.0.1
+          Protocol 2
+          HostKey /etc/ssh/ssh_host_ed25519_key
+          HostKey /etc/ssh/ssh_host_rsa_key
+          PidFile /run/l2sshd.pid
+          AuthorizedKeysFile .ssh/authorized_keys
+          PubkeyAuthentication yes
+          PasswordAuthentication no
+          KbdInteractiveAuthentication no
+          PermitRootLogin no
+          UsePAM no
+          StrictModes yes
+          AllowUsers l2support
+          LogLevel VERBOSE
+          CONF
+
+          sudo /usr/sbin/sshd -t -f /etc/ssh/sshd_config_l2lab
+
+          cat <<'UNIT' | sudo tee /etc/systemd/system/l2sshd.service >/dev/null
+          [Unit]
+          Description=L2 Support Lab SSH Daemon
+          After=network.target
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/sbin/sshd -D -e -E /var/log/l2sshd.log -f /etc/ssh/sshd_config_l2lab
+          ExecReload=/bin/kill -HUP $MAINPID
+          Restart=no
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+          sudo touch /var/log/l2sshd.log
+          sudo chmod 0640 /var/log/l2sshd.log
+          sudo systemctl daemon-reload
+          sudo systemctl start l2sshd.service
+          sleep 1
+
+          {
+            echo "Scenario prepared at $(date -u +%FT%TZ)"
+            cat /etc/os-release
+            uname -a
+            echo
+            echo 'Intentional fault: /home/l2support/.ssh/authorized_keys is mode 0666.'
+            echo 'Expected result: sshd StrictModes rejects public-key authentication.'
+          } > "$EVIDENCE/environment.txt"
+
+      - name: Reproduce SSH authentication failure
+        shell: bash
+        run: |
+          set +e
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-07"
+          KEY="$RUNNER_TEMP/scenario07-client/id_ed25519"
+          ssh -vvv \
+            -i "$KEY" \
+            -p 2222 \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=5 \
+            l2support@127.0.0.1 'echo unexpected-success' \
+            > "$EVIDENCE/ssh-before.stdout.txt" \
+            2> "$EVIDENCE/ssh-before.stderr.txt"
+          SSH_CODE=$?
+          set -e
+
+          echo "ssh exit code: $SSH_CODE" | tee "$EVIDENCE/failure-code.txt"
+          if [[ "$SSH_CODE" -eq 0 ]]; then
+            echo 'Expected public-key authentication failure was not reproduced.' >&2
+            exit 1
+          fi
+
+      - name: Gather L2 diagnostic evidence
+        shell: bash
+        run: |
+          set +e
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-07"
+          {
+            echo '=== TIMESTAMP ==='
+            date -u +%FT%TZ
+            echo
+            echo '=== SERVICE STATUS ==='
+            sudo systemctl status l2sshd.service --no-pager -l
+            echo
+            echo '=== PROCESS ==='
+            ps -ef | grep -E '[s]shd.*sshd_config_l2lab'
+            echo
+            echo '=== LISTENING SOCKET ==='
+            sudo ss -ltnp | grep ':2222'
+            echo
+            echo '=== TCP CONNECTIVITY ==='
+            nc -vz 127.0.0.1 2222
+            echo
+            echo '=== FIREWALL STATE ==='
+            if command -v ufw >/dev/null 2>&1; then sudo ufw status verbose; else echo 'ufw not installed'; fi
+            echo
+            echo '=== TARGET USER ==='
+            getent passwd l2support
+            id l2support
+            echo
+            echo '=== SSH PATH PERMISSIONS ==='
+            sudo namei -l /home/l2support/.ssh/authorized_keys
+            sudo stat -c '%A %a %U:%G %n' /home/l2support /home/l2support/.ssh /home/l2support/.ssh/authorized_keys
+            echo
+            echo '=== SSHD EFFECTIVE CONFIG ==='
+            sudo /usr/sbin/sshd -T -f /etc/ssh/sshd_config_l2lab | grep -E '^(port|listenaddress|pubkeyauthentication|passwordauthentication|authorizedkeysfile|strictmodes|allowusers)'
+            echo
+            echo '=== SSH CLIENT DEBUG TAIL ==='
+            tail -80 "$EVIDENCE/ssh-before.stderr.txt"
+            echo
+            echo '=== SSH SERVER LOG ==='
+            sudo tail -80 /var/log/l2sshd.log
+          } | tee "$EVIDENCE/investigation.txt"
+          set -e
+
+      - name: Apply minimum security-preserving correction
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-07"
+
+          sudo chmod 0600 /home/l2support/.ssh/authorized_keys
+          sudo chown l2support:l2support /home/l2support/.ssh/authorized_keys
+
+          {
+            echo 'Confirmed cause: sshd StrictModes rejected the correct authorized_keys file because it was writable by group/others (0666).'
+            echo 'Corrective action: changed only authorized_keys to mode 0600 and retained ownership by l2support.'
+            echo 'Security controls were preserved: StrictModes remained enabled and password authentication remained disabled.'
+          } | tee "$EVIDENCE/corrective-action.txt"
+
+      - name: Verify SSH recovery independently
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-07"
+          KEY="$RUNNER_TEMP/scenario07-client/id_ed25519"
+
+          REMOTE_OUTPUT="$(ssh \
+            -i "$KEY" \
+            -p 2222 \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=no \
+            -o UserKnownHostsFile=/dev/null \
+            -o ConnectTimeout=5 \
+            l2support@127.0.0.1 'printf "remote-user=%s\\n" "$(whoami)"; printf "remote-host=%s\\n" "$(hostname)"; printf "ssh-recovery=PASS\\n"')"
+
+          echo "$REMOTE_OUTPUT" | tee "$EVIDENCE/ssh-after.txt"
+          grep -q '^remote-user=l2support$' "$EVIDENCE/ssh-after.txt"
+          grep -q '^ssh-recovery=PASS$' "$EVIDENCE/ssh-after.txt"
+
+          {
+            echo "Service state: $(sudo systemctl is-active l2sshd.service)"
+            sudo ss -ltnp | grep ':2222'
+            sudo stat -c 'authorized_keys mode=%a owner=%U:%G' /home/l2support/.ssh/authorized_keys
+            echo 'Public-key remote command: PASS'
+            echo 'Password authentication remains disabled: PASS'
+            echo 'StrictModes remains enabled: PASS'
+            echo 'Scenario result: RESOLVED'
+            echo
+            echo 'Server log tail after successful authentication:'
+            sudo tail -40 /var/log/l2sshd.log
+          } | tee "$EVIDENCE/final-verification.txt"
+
+      - name: Write incident summary
+        shell: bash
+        run: |
+          cat > "$GITHUB_WORKSPACE/evidence-runtime/scenario-07/incident-summary.txt" <<'EOF'
+          Incident: INC-007 Linux SSH Remote Access Fails Despite Correct Public Key
+          Impact: L2 remote administration using the approved SSH key failed with Permission denied (publickey).
+          Scope verification: l2sshd.service was active, sshd was listening on 127.0.0.1:2222, and local TCP connectivity to port 2222 succeeded, isolating the problem above the network/service layer.
+          Confirmed root cause: /home/l2support/.ssh/authorized_keys had insecure mode 0666. With StrictModes enabled, sshd rejected the key file even though it contained the correct public key.
+          Corrective action: Changed only authorized_keys to mode 0600 and retained l2support ownership. StrictModes and public-key-only authentication were left enabled.
+          Verification: A new SSH session authenticated using the same private key and successfully executed remote identity/health commands as l2support.
+          Escalation decision: No escalation required because connectivity, daemon state and configuration were healthy, the fault was a local file-permission issue, and secure key-based access was restored without weakening SSH policy.
+          EOF
+          cat "$GITHUB_WORKSPACE/evidence-runtime/scenario-07/incident-summary.txt"
+
+      - name: Add workflow summary
+        shell: bash
+        run: |
+          {
+            echo '## INC-007 — Linux SSH Authentication Failure'
+            echo
+            echo '**Result:** Resolved in lab'
+            echo
+            echo '- Proved the SSH service and TCP path were healthy before changing authentication settings.'
+            echo '- Reproduced `Permission denied (publickey)` with the correct key present.'
+            echo '- Used `systemctl`, `ss`, `nc`, `namei`, `stat`, `sshd -T`, client `ssh -vvv` output and server logs.'
+            echo '- Identified insecure `authorized_keys` mode `0666` as the StrictModes failure.'
+            echo '- Corrected the file to `0600` without disabling StrictModes or enabling password authentication.'
+            echo '- Verified successful key-based remote command execution.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sanitized scenario evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-07-evidence
+          path: evidence-runtime/scenario-07/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup temporary SSH lab
+        if: always()
+        shell: bash
+        run: |
+          sudo systemctl stop l2sshd.service 2>/dev/null || true
+          sudo rm -f /etc/systemd/system/l2sshd.service /etc/ssh/sshd_config_l2lab /run/l2sshd.pid /var/log/l2sshd.log
+          sudo systemctl daemon-reload
+          sudo userdel -r l2support 2>/dev/null || true
+          rm -rf "$RUNNER_TEMP/scenario07-client"
