@@ -10,7 +10,8 @@ This repository is designed to build practical troubleshooting evidence for remo
 
 **Phase:** Active scenario execution  
 **Platform baseline:** Windows and Linux hosted-runner capture — executed successfully  
-**Scenario 01:** Linux backup permission failure — **lab validated and resolved**
+**Scenario 01:** Linux backup permission failure — **lab validated and resolved**  
+**Scenario 02:** Windows hostname/name-resolution failure — **lab validated and resolved**
 
 ## Evidence standard
 
@@ -97,6 +98,7 @@ templates/           Reusable support-document templates
 |---|---|---|---|---|
 | BASELINE | Windows/Linux support baseline | Windows + Linux | OS, IP, DNS, storage, services | Executed |
 | INC-001 | Backup job fails because destination is not writable | Linux | Bash, permissions, logs, backup/recovery, RCA | Lab validated |
+| INC-002 | Application works by IP but fails by hostname | Windows | PowerShell, TCP/IP, name resolution, service validation | Lab validated |
 
 Additional scenarios are added only when they are ready to be executed and documented.
 
@@ -136,10 +138,30 @@ See:
 - `incidents/INC-001-RCA-linux-backup-permission-failure.md`
 - `kb/KB-001-linux-backup-destination-not-writable.md`
 
+### INC-002 — Windows name-resolution failure
+
+Executed on Windows Server 2025 Datacenter using PowerShell 7.6.5.
+
+- verified the application returned HTTP `200` by direct IP
+- confirmed the service was listening on `127.0.0.1:8080`
+- reproduced hostname access failure
+- inspected Windows IP/DNS configuration and the local hosts file
+- confirmed `support-app.lab` incorrectly resolved to `127.0.0.2`
+- compared direct-IP and hostname TCP results with `Test-NetConnection`
+- corrected the mapping to `127.0.0.1`
+- flushed the Windows DNS resolver cache
+- independently verified correct resolution, TCP connectivity and HTTP content
+
+See:
+
+- `tickets/INC-002-windows-name-resolution-failure.md`
+- `incidents/INC-002-RCA-windows-name-resolution-failure.md`
+- `kb/KB-002-windows-hostname-connectivity-failure.md`
+
 ## Truthful CV positioning
 
 Current safe description:
 
-> Built a scenario-driven Windows/Linux L2 technical-support lab using GitHub-hosted environments, structured tickets and technical documentation; executed a Linux backup incident covering permission diagnosis, recovery, integrity validation, root-cause analysis and escalation judgement.
+> Built a scenario-driven Windows/Linux L2 technical-support lab using GitHub-hosted environments and structured incident documentation; executed backup/recovery and Windows name-resolution incidents using Bash, PowerShell, TCP diagnostics, permissions analysis, integrity testing, root-cause analysis and escalation judgement.
 
 Do not describe this repository as production infrastructure experience.
