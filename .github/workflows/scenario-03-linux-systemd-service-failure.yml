@@ -1,0 +1,199 @@
+name: Scenario 03 - Linux systemd Service Failure
+
+on:
+  push:
+    paths:
+      - '.github/workflows/scenario-03-linux-systemd-service-failure.yml'
+      - 'tickets/INC-003-linux-systemd-service-failure.md'
+  workflow_dispatch:
+
+jobs:
+  investigate-service-failure:
+    name: Investigate Linux systemd service failure
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare support scenario
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-03"
+          sudo mkdir -p /opt/l2lab/www "$EVIDENCE"
+          printf 'L2 support application healthy - scenario 03\n' | sudo tee /opt/l2lab/www/index.html >/dev/null
+
+          cat <<'SCRIPT' | sudo tee /opt/l2lab/service.sh >/dev/null
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          exec python3 -m http.server 8090 --bind 127.0.0.1 --directory /opt/l2lab/www
+          SCRIPT
+
+          # Intentional fault: service target exists but is not executable.
+          sudo chmod 0644 /opt/l2lab/service.sh
+          sudo chown root:root /opt/l2lab/service.sh
+
+          cat <<'UNIT' | sudo tee /etc/systemd/system/l2support.service >/dev/null
+          [Unit]
+          Description=L2 Support Lab Application
+          After=network.target
+
+          [Service]
+          Type=simple
+          ExecStart=/opt/l2lab/service.sh
+          Restart=no
+          User=root
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+          sudo systemctl daemon-reload
+          sudo systemctl reset-failed l2support.service || true
+          {
+            echo "Scenario prepared at $(date -u +%FT%TZ)"
+            echo "OS: $(lsb_release -ds 2>/dev/null || . /etc/os-release; echo ${PRETTY_NAME:-unknown})"
+            uname -a
+            echo "Intentional fault: /opt/l2lab/service.sh mode set to 0644"
+          } > "$EVIDENCE/environment.txt"
+
+      - name: Reproduce reported service failure
+        shell: bash
+        run: |
+          set +e
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-03"
+          sudo systemctl start l2support.service
+          START_CODE=$?
+          sleep 2
+          sudo systemctl is-active l2support.service > "$EVIDENCE/is-active-before.txt" 2>&1
+          ACTIVE_CODE=$?
+          curl -fsS --max-time 3 http://127.0.0.1:8090/ > "$EVIDENCE/http-before.txt" 2>&1
+          HTTP_CODE=$?
+          set -e
+
+          printf 'systemctl start exit code: %s\n' "$START_CODE" | tee "$EVIDENCE/start-exit-code.txt"
+          printf 'systemctl is-active exit code: %s\n' "$ACTIVE_CODE" | tee -a "$EVIDENCE/start-exit-code.txt"
+          printf 'curl exit code: %s\n' "$HTTP_CODE" | tee -a "$EVIDENCE/start-exit-code.txt"
+
+          if [[ "$ACTIVE_CODE" -eq 0 || "$HTTP_CODE" -eq 0 ]]; then
+            echo 'Expected service failure was not reproduced.' >&2
+            exit 1
+          fi
+
+      - name: Gather L2 diagnostic evidence
+        shell: bash
+        run: |
+          set +e
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-03"
+          {
+            echo '=== TIMESTAMP ==='
+            date -u +%FT%TZ
+            echo
+            echo '=== OS / KERNEL ==='
+            cat /etc/os-release
+            uname -a
+            echo
+            echo '=== SERVICE STATUS ==='
+            sudo systemctl status l2support.service --no-pager -l
+            echo
+            echo '=== SERVICE UNIT ==='
+            sudo systemctl cat l2support.service
+            echo
+            echo '=== JOURNAL ==='
+            sudo journalctl -u l2support.service --no-pager -n 60 -o short-iso
+            echo
+            echo '=== TARGET FILE ==='
+            ls -l /opt/l2lab/service.sh
+            stat /opt/l2lab/service.sh
+            namei -l /opt/l2lab/service.sh
+            echo
+            echo '=== PROCESS CHECK ==='
+            ps -ef | grep -E '[p]ython3 -m http.server 8090|[l]2support'
+            echo
+            echo '=== LISTENING PORTS ==='
+            sudo ss -ltnp | grep ':8090' || true
+          } | tee "$EVIDENCE/investigation.txt"
+          set -e
+
+      - name: Apply minimum corrective action
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-03"
+          sudo chmod 0755 /opt/l2lab/service.sh
+          sudo systemctl restart l2support.service
+          sleep 2
+          {
+            echo 'Confirmed cause: ExecStart target existed but lacked execute permission.'
+            echo 'Corrective action: changed /opt/l2lab/service.sh from mode 0644 to 0755.'
+            echo 'No service-unit redesign or application-code change was required.'
+          } | tee "$EVIDENCE/corrective-action.txt"
+
+      - name: Verify service restoration independently
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-03"
+          ACTIVE="$(sudo systemctl is-active l2support.service)"
+          ENABLED="$(sudo systemctl is-enabled l2support.service 2>/dev/null || true)"
+          PORT_LINE="$(sudo ss -ltnp | grep ':8090')"
+          RESPONSE="$(curl -fsS --max-time 5 http://127.0.0.1:8090/)"
+
+          [[ "$ACTIVE" == 'active' ]]
+          [[ "$RESPONSE" == *'L2 support application healthy'* ]]
+
+          {
+            echo "Service state: $ACTIVE"
+            echo "Enablement state: $ENABLED"
+            echo "Listening port: $PORT_LINE"
+            echo "HTTP response: $RESPONSE"
+            echo 'Application content verified: PASS'
+            echo 'Scenario result: RESOLVED'
+          } | tee "$EVIDENCE/final-verification.txt"
+
+      - name: Write incident summary
+        shell: bash
+        run: |
+          cat > "$GITHUB_WORKSPACE/evidence-runtime/scenario-03/incident-summary.txt" <<'EOF'
+          Incident: INC-003 Linux Service Fails to Start
+          Impact: Internal application was unavailable because the systemd-managed process never started and TCP 8090 was not listening.
+          Confirmed root cause: The ExecStart target /opt/l2lab/service.sh existed but did not have execute permission, preventing systemd from launching the service.
+          Corrective action: Restored execute permission with chmod 0755 and restarted the unit.
+          Verification: systemctl reported active, TCP 8090 was listening, and an HTTP request returned the expected application content.
+          Escalation decision: No escalation required after an OS-level permission cause was confirmed and service recovery was independently verified.
+          EOF
+          cat "$GITHUB_WORKSPACE/evidence-runtime/scenario-03/incident-summary.txt"
+
+      - name: Add workflow summary
+        shell: bash
+        run: |
+          {
+            echo '## INC-003 — Linux systemd Service Failure'
+            echo
+            echo '**Result:** Resolved in lab'
+            echo
+            echo '- Reproduced a failed systemd service start.'
+            echo '- Used systemctl status and journalctl for diagnosis.'
+            echo '- Inspected the ExecStart target and permissions.'
+            echo '- Applied the minimum permission correction.'
+            echo '- Verified active service state, listening port and HTTP response.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sanitized scenario evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-03-evidence
+          path: evidence-runtime/scenario-03/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup temporary service
+        if: always()
+        shell: bash
+        run: |
+          sudo systemctl stop l2support.service 2>/dev/null || true
+          sudo rm -f /etc/systemd/system/l2support.service
+          sudo rm -rf /opt/l2lab
+          sudo systemctl daemon-reload
+          sudo systemctl reset-failed l2support.service 2>/dev/null || true
