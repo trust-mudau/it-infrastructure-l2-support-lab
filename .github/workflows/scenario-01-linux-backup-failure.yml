@@ -1,0 +1,163 @@
+name: Scenario 01 - Linux Backup Failure
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/scenario-01-linux-backup-failure.yml'
+      - 'scripts/bash/backup.sh'
+      - 'tickets/INC-001-linux-backup-failure.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  investigate-and-recover:
+    name: Investigate failed Linux backup
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare support scenario
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p lab/source lab/backup evidence-runtime/scenario-01
+          printf 'customer_id,status\n1001,active\n1002,pending\n' > lab/source/customers.csv
+          printf 'Application configuration for recovery test\n' > lab/source/app.conf
+          chmod +x scripts/bash/backup.sh
+
+          # Simulate the incident: the backup destination exists but is not writable.
+          chmod 0555 lab/backup
+
+          {
+            echo "Scenario prepared at $(date -u +%FT%TZ)"
+            echo "Runner OS: $RUNNER_OS"
+            uname -a
+          } > evidence-runtime/scenario-01/environment.txt
+
+      - name: Reproduce reported backup failure
+        shell: bash
+        run: |
+          set +e
+          ./scripts/bash/backup.sh "$PWD/lab/source" "$PWD/lab/backup" \
+            > evidence-runtime/scenario-01/failed-backup.log 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          echo "$EXIT_CODE" > evidence-runtime/scenario-01/failed-exit-code.txt
+          cat evidence-runtime/scenario-01/failed-backup.log
+          echo "Observed exit code: $EXIT_CODE"
+
+          if [[ "$EXIT_CODE" -eq 0 ]]; then
+            echo "Expected the incident reproduction to fail, but it succeeded." >&2
+            exit 1
+          fi
+
+      - name: Gather L2 diagnostic evidence
+        shell: bash
+        run: |
+          {
+            echo '=== TIMESTAMP ==='
+            date -u +%FT%TZ
+            echo
+            echo '=== CURRENT IDENTITY ==='
+            id
+            echo
+            echo '=== DIRECTORY PERMISSIONS ==='
+            ls -ld lab lab/source lab/backup
+            stat lab/backup
+            echo
+            echo '=== FILESYSTEM CAPACITY ==='
+            df -h "$PWD"
+            echo
+            echo '=== SOURCE DATA ==='
+            find lab/source -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
+            echo
+            echo '=== FAILED COMMAND OUTPUT ==='
+            cat evidence-runtime/scenario-01/failed-backup.log
+            echo
+            echo '=== FAILED EXIT CODE ==='
+            cat evidence-runtime/scenario-01/failed-exit-code.txt
+          } | tee evidence-runtime/scenario-01/investigation.txt
+
+      - name: Apply minimum corrective action and rerun backup
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          # Confirmed cause: destination lacks write permission for the executing identity.
+          chmod 0750 lab/backup
+
+          ./scripts/bash/backup.sh "$PWD/lab/source" "$PWD/lab/backup" \
+            | tee evidence-runtime/scenario-01/successful-backup.log
+
+          ls -lah lab/backup | tee evidence-runtime/scenario-01/backup-directory-after-fix.txt
+
+      - name: Verify backup integrity and restore data
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ARCHIVE="$(find lab/backup -maxdepth 1 -type f -name 'support-backup-*.tar.gz' | sort | tail -n 1)"
+
+          if [[ -z "$ARCHIVE" ]]; then
+            echo 'No backup archive found after corrective action.' >&2
+            exit 1
+          fi
+
+          sha256sum -c "${ARCHIVE}.sha256" \
+            | tee evidence-runtime/scenario-01/checksum-verification.txt
+
+          mkdir -p lab/restore
+          tar -xzf "$ARCHIVE" -C lab/restore
+
+          diff -ru lab/source lab/restore \
+            | tee evidence-runtime/scenario-01/restore-diff.txt
+
+          {
+            echo "Archive: $ARCHIVE"
+            echo 'Checksum: PASS'
+            echo 'Restore comparison: PASS'
+            echo 'Scenario result: RESOLVED'
+          } | tee evidence-runtime/scenario-01/final-verification.txt
+
+      - name: Write incident summary
+        shell: bash
+        run: |
+          cat > evidence-runtime/scenario-01/incident-summary.txt <<'EOF'
+          Incident: INC-001 Linux Backup Job Failure
+          Impact: No new recovery point could be created while the destination was unwritable.
+          Confirmed root cause: Backup destination directory did not grant write permission to the executing identity.
+          Corrective action: Restored appropriate directory write access with the minimum permission change used by this lab.
+          Verification: Backup rerun succeeded, SHA-256 verification passed, archive restored, and restored files matched the source.
+          Escalation decision: No escalation required after local cause was confirmed and recovery was independently verified.
+          EOF
+          cat evidence-runtime/scenario-01/incident-summary.txt
+
+      - name: Add workflow summary
+        shell: bash
+        run: |
+          {
+            echo '## INC-001 — Linux Backup Failure'
+            echo
+            echo '**Result:** Resolved in lab'
+            echo
+            echo '- Reproduced a non-zero backup failure.'
+            echo '- Gathered identity, permission, storage and command evidence before changing configuration.'
+            echo '- Confirmed the destination was not writable.'
+            echo '- Applied a minimum permission correction.'
+            echo '- Re-ran the backup successfully.'
+            echo '- Verified SHA-256 integrity.'
+            echo '- Restored the archive and compared restored data with source data.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sanitized scenario evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-01-evidence
+          path: evidence-runtime/scenario-01/
+          if-no-files-found: error
+          retention-days: 30
