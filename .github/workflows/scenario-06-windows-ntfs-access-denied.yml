@@ -33,7 +33,7 @@ jobs:
           if (Get-LocalGroup -Name $groupName -ErrorAction SilentlyContinue) {
             Remove-LocalGroup -Name $groupName
           }
-          New-LocalGroup -Name $groupName -Description 'Scenario 06 least-privilege application support group' | Out-Null
+          New-LocalGroup -Name $groupName -Description 'L2 application support lab group' | Out-Null
           Add-LocalGroupMember -Group $groupName -Member $env:USERNAME
 
           $currentAccount = "$env:COMPUTERNAME\$env:USERNAME"
