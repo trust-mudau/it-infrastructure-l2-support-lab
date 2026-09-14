@@ -1,0 +1,232 @@
+name: Scenario 04 - Linux Disk Exhaustion
+
+on:
+  push:
+    paths:
+      - '.github/workflows/scenario-04-linux-disk-exhaustion.yml'
+      - 'tickets/INC-004-linux-disk-exhaustion.md'
+  workflow_dispatch:
+
+jobs:
+  investigate-disk-exhaustion:
+    name: Investigate Linux disk exhaustion
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare support scenario
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-04"
+          mkdir -p "$EVIDENCE"
+
+          sudo mkdir -p /mnt/l2lab-disk /opt/l2lab-storage/www
+          sudo mount -t tmpfs -o size=20M tmpfs /mnt/l2lab-disk
+          sudo mkdir -p /mnt/l2lab-disk/logs /mnt/l2lab-disk/data
+          printf 'L2 storage application healthy - scenario 04\n' | sudo tee /opt/l2lab-storage/www/index.html >/dev/null
+
+          cat <<'SCRIPT' | sudo tee /opt/l2lab-storage/service.sh >/dev/null
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          dd if=/dev/zero of=/mnt/l2lab-disk/data/startup.cache bs=1M count=4 status=none
+          exec python3 -m http.server 8091 --bind 127.0.0.1 --directory /opt/l2lab-storage/www
+          SCRIPT
+          sudo chmod 0755 /opt/l2lab-storage/service.sh
+
+          # Intentional fault: stale application log consumes most of the isolated filesystem.
+          sudo dd if=/dev/zero of=/mnt/l2lab-disk/logs/application.log bs=1M count=18 status=none
+
+          cat <<'UNIT' | sudo tee /etc/systemd/system/l2storage.service >/dev/null
+          [Unit]
+          Description=L2 Support Lab Storage Application
+          After=network.target
+
+          [Service]
+          Type=simple
+          ExecStart=/opt/l2lab-storage/service.sh
+          Restart=no
+          User=root
+
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+          sudo systemctl daemon-reload
+          {
+            echo "Scenario prepared at $(date -u +%FT%TZ)"
+            cat /etc/os-release
+            echo
+            echo 'Initial filesystem capacity:'
+            df -h /mnt/l2lab-disk
+            echo
+            echo 'Intentional fault: 18 MiB stale log on a 20 MiB isolated filesystem.'
+          } > "$EVIDENCE/environment.txt"
+
+      - name: Reproduce reported application failure
+        shell: bash
+        run: |
+          set +e
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-04"
+          sudo systemctl start l2storage.service
+          START_CODE=$?
+          sleep 2
+          sudo systemctl is-active l2storage.service > "$EVIDENCE/is-active-before.txt" 2>&1
+          ACTIVE_CODE=$?
+          curl -fsS --max-time 3 http://127.0.0.1:8091/ > "$EVIDENCE/http-before.txt" 2>&1
+          HTTP_CODE=$?
+          set -e
+
+          {
+            echo "systemctl start exit code: $START_CODE"
+            echo "systemctl is-active exit code: $ACTIVE_CODE"
+            echo "curl exit code: $HTTP_CODE"
+          } | tee "$EVIDENCE/failure-codes.txt"
+
+          if [[ "$ACTIVE_CODE" -eq 0 || "$HTTP_CODE" -eq 0 ]]; then
+            echo 'Expected storage-related service failure was not reproduced.' >&2
+            exit 1
+          fi
+
+      - name: Gather L2 diagnostic evidence
+        shell: bash
+        run: |
+          set +e
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-04"
+          {
+            echo '=== TIMESTAMP ==='
+            date -u +%FT%TZ
+            echo
+            echo '=== OS / KERNEL ==='
+            cat /etc/os-release
+            uname -a
+            echo
+            echo '=== SERVICE STATUS ==='
+            sudo systemctl status l2storage.service --no-pager -l
+            echo
+            echo '=== JOURNAL ==='
+            sudo journalctl -u l2storage.service --no-pager -n 60 -o short-iso
+            echo
+            echo '=== FILESYSTEM MOUNT ==='
+            mount | grep '/mnt/l2lab-disk'
+            echo
+            echo '=== BLOCK CAPACITY ==='
+            df -h /mnt/l2lab-disk
+            df -B1 /mnt/l2lab-disk
+            echo
+            echo '=== INODE CAPACITY ==='
+            df -i /mnt/l2lab-disk
+            echo
+            echo '=== DIRECTORY USAGE ==='
+            sudo du -xh --max-depth=2 /mnt/l2lab-disk | sort -h
+            echo
+            echo '=== LARGEST FILES ==='
+            sudo find /mnt/l2lab-disk -type f -printf '%s %p\n' | sort -nr | head -20
+            echo
+            echo '=== PROCESS CHECK ==='
+            ps -ef | grep -E '[p]ython3 -m http.server 8091|[l]2storage'
+            echo
+            echo '=== LISTENING PORTS ==='
+            sudo ss -ltnp | grep ':8091' || true
+          } | tee "$EVIDENCE/investigation.txt"
+          set -e
+
+      - name: Apply minimum approved cleanup
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-04"
+
+          BEFORE_BYTES="$(stat -c %s /mnt/l2lab-disk/logs/application.log)"
+          sudo truncate -s 1M /mnt/l2lab-disk/logs/application.log
+          AFTER_BYTES="$(stat -c %s /mnt/l2lab-disk/logs/application.log)"
+          sudo systemctl restart l2storage.service
+          sleep 2
+
+          {
+            echo 'Confirmed cause: block capacity was exhausted by an oversized stale application log.'
+            echo "Log size before cleanup: $BEFORE_BYTES bytes"
+            echo "Log size after approved truncation: $AFTER_BYTES bytes"
+            echo 'Corrective action: retained a 1 MiB log placeholder, reclaimed space, then restarted the service.'
+            echo 'Inode capacity was checked and was not the limiting resource.'
+          } | tee "$EVIDENCE/corrective-action.txt"
+
+      - name: Verify storage and application recovery independently
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-04"
+
+          ACTIVE="$(sudo systemctl is-active l2storage.service)"
+          PORT_LINE="$(sudo ss -ltnp | grep ':8091')"
+          RESPONSE="$(curl -fsS --max-time 5 http://127.0.0.1:8091/)"
+          CACHE_SIZE="$(stat -c %s /mnt/l2lab-disk/data/startup.cache)"
+          USE_PERCENT="$(df -P /mnt/l2lab-disk | awk 'NR==2 {gsub(/%/,"",$5); print $5}')"
+
+          [[ "$ACTIVE" == 'active' ]]
+          [[ "$RESPONSE" == *'L2 storage application healthy'* ]]
+          [[ "$CACHE_SIZE" -ge 4000000 ]]
+          [[ "$USE_PERCENT" -lt 80 ]]
+
+          {
+            echo "Service state: $ACTIVE"
+            echo "Listening port: $PORT_LINE"
+            echo "HTTP response: $RESPONSE"
+            echo "Startup cache bytes: $CACHE_SIZE"
+            echo "Filesystem use after remediation: ${USE_PERCENT}%"
+            echo 'Capacity recovery: PASS'
+            echo 'Application content verified: PASS'
+            echo 'Scenario result: RESOLVED'
+          } | tee "$EVIDENCE/final-verification.txt"
+
+          df -h /mnt/l2lab-disk | tee "$EVIDENCE/df-after.txt"
+          df -i /mnt/l2lab-disk | tee "$EVIDENCE/df-inodes-after.txt"
+
+      - name: Write incident summary
+        shell: bash
+        run: |
+          cat > "$GITHUB_WORKSPACE/evidence-runtime/scenario-04/incident-summary.txt" <<'EOF'
+          Incident: INC-004 Linux Disk Exhaustion Causes Application Startup Failure
+          Impact: Internal application could not start because its runtime write failed on a nearly full application filesystem.
+          Confirmed root cause: An 18 MiB stale application log consumed most of a 20 MiB isolated filesystem, leaving insufficient block capacity for a 4 MiB startup cache.
+          Corrective action: After identifying the oversized log and confirming inode capacity was healthy, reduced the stale log to 1 MiB under the lab's approved cleanup condition and restarted the service.
+          Verification: Filesystem usage fell below the defined threshold, the startup cache was created, systemd reported the service active, TCP 8091 listened, and HTTP returned expected content.
+          Escalation decision: No escalation required because the local storage consumer was identified, cleanup was within lab authorization, capacity recovered, and the application was independently verified.
+          EOF
+          cat "$GITHUB_WORKSPACE/evidence-runtime/scenario-04/incident-summary.txt"
+
+      - name: Add workflow summary
+        shell: bash
+        run: |
+          {
+            echo '## INC-004 — Linux Disk Exhaustion'
+            echo
+            echo '**Result:** Resolved in lab'
+            echo
+            echo '- Reproduced an application failure caused by filesystem capacity exhaustion.'
+            echo '- Used df, df -i, du and find to separate block usage, inode usage and largest-file analysis.'
+            echo '- Used systemctl and journalctl to connect the storage condition to service failure.'
+            echo '- Applied a minimum approved cleanup to the confirmed largest stale log.'
+            echo '- Verified free space, runtime-file creation, active service state, listening port and HTTP response.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sanitized scenario evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-04-evidence
+          path: evidence-runtime/scenario-04/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup isolated lab filesystem and service
+        if: always()
+        shell: bash
+        run: |
+          sudo systemctl stop l2storage.service 2>/dev/null || true
+          sudo rm -f /etc/systemd/system/l2storage.service
+          sudo systemctl daemon-reload
+          sudo umount /mnt/l2lab-disk 2>/dev/null || true
+          sudo rm -rf /mnt/l2lab-disk /opt/l2lab-storage
+          sudo systemctl reset-failed l2storage.service 2>/dev/null || true
