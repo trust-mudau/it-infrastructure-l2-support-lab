@@ -1,0 +1,136 @@
+name: Scenario 09 - Linux IP Routing Misconfiguration
+
+on:
+  push:
+    paths:
+      - '.github/workflows/scenario-09-linux-ip-routing-misconfiguration.yml'
+  workflow_dispatch:
+
+jobs:
+  investigate-network:
+    name: Investigate Linux IP and routing misconfiguration
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare isolated network scenario
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-09"
+          mkdir -p "$EVIDENCE"
+          sudo ip netns del l2client 2>/dev/null || true
+          sudo ip link del l2host 2>/dev/null || true
+          sudo ip netns add l2client
+          sudo ip link add l2host type veth peer name l2client0
+          sudo ip link set l2client0 netns l2client
+          sudo ip addr add 10.77.0.1/24 dev l2host
+          sudo ip link set l2host up
+          sudo ip netns exec l2client ip link set lo up
+          sudo ip netns exec l2client ip link set l2client0 up
+          # Intentional fault: wrong subnet left by a stale/fallback IP configuration.
+          sudo ip netns exec l2client ip addr add 10.77.1.20/24 dev l2client0
+          mkdir -p /tmp/l2scenario09-www
+          echo 'scenario09-network-service=healthy' > /tmp/l2scenario09-www/health.txt
+          nohup python3 -m http.server 8088 --bind 10.77.0.1 --directory /tmp/l2scenario09-www > /tmp/l2scenario09-http.log 2>&1 &
+          echo $! > /tmp/l2scenario09-http.pid
+          sleep 1
+          sudo ss -ltnp | grep ':8088'
+
+      - name: Reproduce connectivity failure
+        shell: bash
+        run: |
+          set +e
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-09"
+          sudo ip netns exec l2client curl -sS --connect-timeout 2 http://10.77.0.1:8088/health.txt > "$EVIDENCE/curl-before.stdout.txt" 2> "$EVIDENCE/curl-before.stderr.txt"
+          RC=$?
+          set -e
+          echo "curl_exit=$RC" | tee "$EVIDENCE/failure-code.txt"
+          if [[ $RC -eq 0 ]]; then echo 'Expected network failure was not reproduced.' >&2; exit 1; fi
+
+      - name: Gather L2 network evidence
+        shell: bash
+        run: |
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-09"
+          {
+            echo '=== HOST INTERFACE ==='
+            ip addr show l2host
+            echo
+            echo '=== CLIENT INTERFACE ==='
+            sudo ip netns exec l2client ip -br addr
+            echo
+            echo '=== CLIENT ROUTES ==='
+            sudo ip netns exec l2client ip route
+            echo
+            echo '=== CLIENT ROUTE LOOKUP ==='
+            sudo ip netns exec l2client ip route get 10.77.0.1 || true
+            echo
+            echo '=== CLIENT NEIGHBOURS ==='
+            sudo ip netns exec l2client ip neigh
+            echo
+            echo '=== HOST SERVICE SOCKET ==='
+            sudo ss -ltnp | grep ':8088'
+            echo
+            echo '=== HOST LOCAL HEALTH CHECK ==='
+            curl -sS http://10.77.0.1:8088/health.txt
+            echo
+            echo '=== CLIENT PING ==='
+            sudo ip netns exec l2client ping -c 2 -W 1 10.77.0.1 || true
+          } | tee "$EVIDENCE/investigation.txt"
+
+      - name: Correct client IP configuration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-09"
+          sudo ip netns exec l2client ip addr flush dev l2client0
+          sudo ip netns exec l2client ip addr add 10.77.0.20/24 dev l2client0
+          {
+            echo 'Confirmed root cause: the client interface was configured as 10.77.1.20/24 while the support service was on 10.77.0.1/24.'
+            echo 'Corrective action: replaced only the stale client address with 10.77.0.20/24.'
+            echo 'No host-side service or firewall change was required.'
+          } | tee "$EVIDENCE/corrective-action.txt"
+
+      - name: Verify network recovery
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-09"
+          sudo ip netns exec l2client ip -br addr | tee "$EVIDENCE/client-address-after.txt"
+          sudo ip netns exec l2client ip route | tee "$EVIDENCE/client-route-after.txt"
+          sudo ip netns exec l2client ping -c 2 -W 1 10.77.0.1 | tee "$EVIDENCE/ping-after.txt"
+          sudo ip netns exec l2client curl -fsS http://10.77.0.1:8088/health.txt | tee "$EVIDENCE/http-after.txt"
+          grep -q 'scenario09-network-service=healthy' "$EVIDENCE/http-after.txt"
+          echo 'Scenario result: RESOLVED' | tee "$EVIDENCE/final-verification.txt"
+
+      - name: Write incident summary
+        shell: bash
+        run: |
+          cat > "$GITHUB_WORKSPACE/evidence-runtime/scenario-09/incident-summary.txt" <<'EOF'
+          Incident: INC-009 Linux Client Cannot Reach Support Service After IP Misconfiguration
+          Impact: an isolated client could not reach a healthy service on 10.77.0.1:8088.
+          Scope verification: the host service was listening and answered locally, isolating the fault to the client/network path.
+          Confirmed root cause: client address 10.77.1.20/24 was in the wrong subnet for the directly connected 10.77.0.0/24 service network.
+          Corrective action: replaced the stale/fallback address with 10.77.0.20/24.
+          Verification: route, ping and HTTP checks all succeeded from the isolated client namespace.
+          Escalation decision: no escalation required because the fault was a local address configuration issue and no upstream network change was needed.
+          EOF
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-09-evidence
+          path: evidence-runtime/scenario-09/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f /tmp/l2scenario09-http.pid ]]; then kill "$(cat /tmp/l2scenario09-http.pid)" 2>/dev/null || true; fi
+          sudo ip netns del l2client 2>/dev/null || true
+          sudo ip link del l2host 2>/dev/null || true
+          rm -rf /tmp/l2scenario09-www /tmp/l2scenario09-http.log /tmp/l2scenario09-http.pid
