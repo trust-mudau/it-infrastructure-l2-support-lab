@@ -147,10 +147,10 @@ jobs:
           # Fix 3: grant the service group controlled write access to the backup directory.
           sudo chmod 0770 /var/backups/l2portal
           sudo -u l2app /usr/local/bin/l2portal-backup.sh
-          sha256sum /var/backups/l2portal/portal-data.tgz | tee "$EVIDENCE/backup-sha256.txt"
+          sudo sha256sum /var/backups/l2portal/portal-data.tgz | tee "$EVIDENCE/backup-sha256.txt"
           mkdir -p /tmp/l2portal-restore
-          tar -xzf /var/backups/l2portal/portal-data.tgz -C /tmp/l2portal-restore
-          diff -r /srv/l2portal/www /tmp/l2portal-restore/www | tee "$EVIDENCE/restore-diff.txt"
+          sudo tar -xzf /var/backups/l2portal/portal-data.tgz -C /tmp/l2portal-restore
+          sudo diff -r /srv/l2portal/www /tmp/l2portal-restore/www | tee "$EVIDENCE/restore-diff.txt"
 
           cat > "$EVIDENCE/corrective-actions.txt" <<'EOF'
           Fault 1: changed app.env from 0600 root:l2app to 0640 root:l2app so the l2app service could read configuration without world access.
@@ -176,7 +176,7 @@ jobs:
             echo 'backup_permissions:'
             sudo stat -c '%a %U:%G %n' /var/backups/l2portal
             echo 'backup_archive:'
-            ls -lh /var/backups/l2portal/portal-data.tgz
+            sudo ls -lh /var/backups/l2portal/portal-data.tgz
             echo 'restore_check=PASS'
             echo 'Scenario result: RESOLVED'
           } | tee "$EVIDENCE/final-verification.txt"
