@@ -1,287 +1,107 @@
 # IT Infrastructure & L2 Technical Support Lab
 
-Scenario-driven technical support lab focused on realistic Level 1 / Level 2 infrastructure incidents using GitHub-hosted Windows and Linux environments.
+Scenario-driven Windows/Linux technical-support lab built to demonstrate practical Level 1 / Level 2 investigation, recovery, escalation judgement, root-cause analysis and technical documentation.
 
-## Project purpose
+## Status
 
-This repository is designed to build practical troubleshooting evidence for remote technical-support, MSP, infrastructure-support and junior systems roles. It emphasizes diagnosis, verification, recovery, escalation judgement, root-cause analysis and technical documentation rather than memorised theory.
+**15 support incidents + Windows/Linux platform baseline completed.** All incidents listed as **Lab validated** were executed in GitHub-hosted environments and required explicit technical verification before being marked resolved.
 
-## Current status
+> This is a hands-on portfolio lab, not production employment experience. Cloud and virtualization claims are scoped to exactly what was executed.
 
-**Phase:** Active scenario execution  
-**Platform baseline:** Windows and Linux hosted-runner capture — executed successfully  
-**Scenario 01:** Linux backup permission failure — **lab validated and resolved**  
-**Scenario 02:** Windows hostname/name-resolution failure — **lab validated and resolved**  
-**Scenario 03:** Linux `systemd` service execution failure — **lab validated and resolved**  
-**Scenario 04:** Linux disk/storage exhaustion — **lab validated and resolved**  
-**Scenario 05:** Scheduled backup environment failure — **lab validated and resolved**  
-**Scenario 06:** Windows NTFS access-denied / ACL conflict — **lab validated and resolved**  
-**Scenario 07:** Linux SSH public-key authentication failure — **lab validated and resolved**
+## Architecture
+
+```mermaid
+flowchart LR
+    GH[GitHub Repository] --> GA[GitHub Actions]
+    GA --> WIN[Windows Server 2025 runners]
+    GA --> LNX[Ubuntu 24.04 runners]
+    WIN --> EV[Evidence artifacts]
+    LNX --> EV
+    EV --> T[Tickets]
+    T --> R[RCA / Incident reports]
+    R --> K[Knowledge-base articles]
+```
 
 ## Evidence standard
 
-Every claim in this repository is labelled honestly:
+- **Executed** — commands/workflows actually ran in the hosted lab.
+- **Lab validated** — the fault was reproduced, investigated, corrected/contained, and independently checked.
+- **Configuration lab validated** — tooling/configuration was executed and validated without claiming a live cloud deployment.
+- **Designed only** — documented but not executed.
 
-- **Executed** — commands or workflows actually ran in a GitHub-hosted lab environment.
-- **Scenario validated** — a realistic simulated incident was investigated using supplied or generated technical evidence.
-- **Designed only** — documentation exists, but the technical action has not been executed.
-- **Not implemented** — intentionally excluded because of environment, licensing or hardware limitations.
-
-This project does **not** represent production employment experience. It is a hands-on support lab.
-
-## Lab architecture
-
-```mermaid
-flowchart TB
-    GH["GitHub Repository"]
-    ACT["GitHub Actions"]
-
-    subgraph Linux["Linux Support Environment"]
-        UBU["Ubuntu hosted runner"]
-        BASH["Bash / Linux CLI"]
-        LOGS["Logs & evidence"]
-    end
-
-    subgraph Windows["Windows Support Environment"]
-        WIN["Windows hosted runner"]
-        PS["PowerShell"]
-        WLOG["System evidence"]
-    end
-
-    SC["Support scenarios"]
-    TKT["Tickets"]
-    RCA["Incident / RCA reports"]
-    KB["Knowledge base"]
-    EVD["Workflow artifacts"]
-
-    GH --> ACT
-    ACT --> Linux
-    ACT --> Windows
-    SC --> ACT
-    SC --> TKT
-    ACT --> EVD
-    TKT --> RCA
-    RCA --> KB
-```
-
-## Planned skill coverage
-
-- Linux CLI administration and troubleshooting
-- Windows / PowerShell troubleshooting
-- TCP/IP, DNS and connectivity diagnostics
-- SSH and remote-access troubleshooting
-- Processes and services
-- Logs and event analysis
-- Users, groups and permissions
-- Disk and storage troubleshooting
-- Backup, failed-backup investigation and recovery
-- Scheduled-job troubleshooting
-- Virtualization concepts and recovery decisions
-- Cloud fundamentals
-- Security-related troubleshooting
-- L1/L2 ticket handling
-- Escalation decisions
-- Root-cause analysis
-- Knowledge-base writing
-
-## Repository structure
-
-```text
-.github/workflows/   Automated lab scenarios
-docs/                Architecture, methodology and lab documentation
-scripts/             Bash and PowerShell tools used in scenarios
-tickets/             Realistic support tickets
-incidents/           Root-cause / incident reports
-kb/                  Knowledge-base articles
-evidence/            Evidence policy and sanitized artifacts
-reports/             Final technical report and job-fit audit
-templates/           Reusable support-document templates
-```
+Runtime artifacts are retained by GitHub Actions for a limited period; permanent ticket/RCA/KB records and workflow definitions remain in this repository.
 
 ## Scenario register
 
-| ID | Scenario | Platform | Primary skills | Status |
+| ID | Scenario | Platform | Main L2 evidence | Status |
 |---|---|---|---|---|
 | BASELINE | Windows/Linux support baseline | Windows + Linux | OS, IP, DNS, storage, services | Executed |
-| INC-001 | Backup job fails because destination is not writable | Linux | Bash, permissions, logs, backup/recovery, RCA | Lab validated |
-| INC-002 | Application works by IP but fails by hostname | Windows | PowerShell, TCP/IP, name resolution, service validation | Lab validated |
-| INC-003 | systemd service fails with `203/EXEC` | Linux | systemd, journalctl, processes, permissions, sockets, service recovery | Lab validated |
-| INC-004 | Application fails because filesystem reaches 100% utilization | Linux | df, df -i, du, storage analysis, logs, systemd, recovery | Lab validated |
-| INC-005 | Scheduled backup fails while manual run succeeds | Linux | systemd timers, environment context, backup, integrity, restore testing | Lab validated |
-| INC-006 | Access Denied despite correct support-group membership | Windows | local groups, NTFS ACLs, Get-Acl, icacls, least privilege | Lab validated |
-| INC-007 | SSH public-key authentication fails despite correct key | Linux | SSH, service/port isolation, client debug, server logs, permissions, secure remote access | Lab validated |
+| INC-001 | Backup destination not writable | Linux | permissions, backup, SHA-256, restore | Lab validated |
+| INC-002 | App works by IP but fails by hostname | Windows | TCP/IP, name resolution, PowerShell | Lab validated |
+| INC-003 | `systemd` `203/EXEC` service failure | Linux | systemctl, journalctl, executable permissions | Lab validated |
+| INC-004 | Filesystem exhaustion breaks app | Linux | df, df -i, du, logs, recovery | Lab validated |
+| INC-005 | Scheduled backup fails while manual run works | Linux | systemd timer, environment context, restore | Lab validated |
+| INC-006 | NTFS Access Denied despite correct group | Windows | local groups, Get-Acl, icacls, least privilege | Lab validated |
+| INC-007 | SSH key rejected despite correct key | Linux | ssh -vvv, sshd logs/config, ports, permissions | Lab validated |
+| INC-008 | Windows service stops on startup | Windows | Services, Event Log, Get-WinEvent, TCP | Lab validated |
+| INC-009 | Client in wrong subnet cannot reach healthy app | Linux | network namespace, IP, routes, ping, HTTP | Lab validated |
+| INC-010 | Package left unconfigured by bad dependency | Linux | dpkg, apt, package metadata/dependencies | Lab validated |
+| INC-011 | Windows scheduled backup missing argument | Windows | Task Scheduler, exit code, ZIP, SHA-256, restore | Lab validated |
+| INC-012 | Suspicious process + unauthorized listener | Linux | process/socket/file triage, hashing, containment, escalation | Lab validated |
+| INC-013 | Virtual disk rollback after bad change | QEMU/qcow2 | snapshots, qemu-img/qemu-io, consistency check | Lab validated |
+| INC-014 | Azure NSG configuration misses HTTPS | Azure CLI/Bicep | IaC build, NSG rule/priority analysis | Configuration lab validated |
+| INC-015 | Multi-layer service + hostname + backup outage | Linux | systemd, permissions, hostname, backup/restore, RCA | Lab validated |
 
-Additional scenarios are added only when they are ready to be executed and documented.
+## Skills demonstrated
 
-## Troubleshooting model
+### Linux / infrastructure support
+Bash, users/service accounts, file permissions, `systemd`, `journalctl`, processes, sockets, SSH, `ip`, routes, network namespaces, `df`/`du`, package management, scheduled jobs, backup/recovery and log analysis.
 
-Each scenario follows the same L2 workflow:
+### Windows support
+PowerShell, Windows Services, Application Event Log, `Get-WinEvent`, TCP diagnostics, local groups, NTFS ACLs, `Get-Acl`, `icacls`, Task Scheduler and backup/restore verification.
 
-1. Confirm impact and scope.
-2. Gather evidence before changing anything.
-3. Form and rank hypotheses.
-4. Test the safest/highest-value hypothesis first.
-5. Apply the minimum corrective change.
-6. Verify service restoration independently.
-7. Check for residual risk or recurrence.
-8. Document cause, resolution and escalation decision.
-9. Convert reusable findings into a knowledge-base article where appropriate.
+### Backup and recovery
+Failed-backup diagnosis, destination permissions, scheduled-job execution context, archive integrity with SHA-256, separate restore testing and recovery verification.
 
-## Validated evidence to date
+### Virtualization
+Executed QEMU qcow2 virtual-disk snapshot creation, state change, rollback and consistency validation. **This is not described as production VMware/Hyper-V administration.**
 
-### INC-001 — Linux backup permission failure
+### Cloud fundamentals
+Executed Azure CLI/Bicep NSG configuration analysis, identified a missing inbound HTTPS rule, corrected priority/order and recompiled the template. **No live Azure tenant/resource deployment is claimed.**
 
-Executed on Ubuntu 24.04.5 LTS using GitHub Actions.
+### Security and escalation
+Least-privilege remediation, SSH security controls, NTFS deny/allow precedence, suspicious-process triage, evidence preservation, hashing, containment and an explicit Security/IR escalation decision.
 
-- reproduced non-zero backup failure with exit code `13`
-- inspected identity, directory permissions and filesystem capacity before remediation
-- ruled out storage exhaustion
-- confirmed destination mode `0555` blocked writes
-- applied minimum permission correction to `0750`
-- reran backup successfully
-- validated SHA-256 integrity
-- restored the archive and compared restored data with the source
-- documented the incident, root cause and escalation decision
+### L2 operating method
+Every scenario follows: **impact/scope -> evidence -> hypothesis -> minimum change -> independent verification -> residual risk -> escalation decision -> RCA/KB**.
 
-See:
+## Selected validated executions
 
-- `tickets/INC-001-linux-backup-failure.md`
-- `incidents/INC-001-RCA-linux-backup-permission-failure.md`
-- `kb/KB-001-linux-backup-destination-not-writable.md`
+- INC-007 SSH: https://github.com/trust-mudau/it-infrastructure-l2-support-lab/actions/runs/34875106353
+- INC-008 Windows service/Event Log: https://github.com/trust-mudau/it-infrastructure-l2-support-lab/actions/runs/34875803731
+- INC-009 IP/subnet: https://github.com/trust-mudau/it-infrastructure-l2-support-lab/actions/runs/34875835212
+- INC-010 package dependency: https://github.com/trust-mudau/it-infrastructure-l2-support-lab/actions/runs/34875864469
+- INC-011 Windows scheduled backup: https://github.com/trust-mudau/it-infrastructure-l2-support-lab/actions/runs/34875898930
+- INC-012 security triage: https://github.com/trust-mudau/it-infrastructure-l2-support-lab/actions/runs/34875933477
+- INC-013 snapshot recovery: https://github.com/trust-mudau/it-infrastructure-l2-support-lab/actions/runs/34875963864
+- INC-014 Azure/Bicep NSG: https://github.com/trust-mudau/it-infrastructure-l2-support-lab/actions/runs/34876110072
+- INC-015 multi-layer capstone: https://github.com/trust-mudau/it-infrastructure-l2-support-lab/actions/runs/34876267799
 
-### INC-002 — Windows name-resolution failure
+## Repository layout
 
-Executed on Windows Server 2025 Datacenter using PowerShell 7.6.5.
+```text
+.github/workflows/   executable lab scenarios
+tickets/             service-desk style incident records
+incidents/           root-cause / incident reports
+kb/                  reusable knowledge-base articles
+evidence/            evidence policy and sanitized evidence notes
+docs/                lab design and troubleshooting methodology
+scripts/             reusable Bash/PowerShell tooling
+reports/             final technical/job-fit reporting
+```
 
-- verified the application returned HTTP `200` by direct IP
-- confirmed the service was listening on `127.0.0.1:8080`
-- reproduced hostname access failure
-- inspected Windows IP/DNS configuration and the local hosts file
-- confirmed `support-app.lab` incorrectly resolved to `127.0.0.2`
-- compared direct-IP and hostname TCP results with `Test-NetConnection`
-- corrected the mapping to `127.0.0.1`
-- flushed the Windows DNS resolver cache
-- independently verified correct resolution, TCP connectivity and HTTP content
+## Truthful portfolio/CV positioning
 
-See:
+> Built and validated a 15-incident Windows/Linux L2 technical-support lab using GitHub-hosted environments, covering service and Event Log analysis, TCP/IP/name resolution, SSH, permissions, storage, package dependencies, scheduled tasks, backup/restore, security triage, virtual-disk snapshot recovery and Azure/Bicep network-security configuration; documented each scenario through tickets, root-cause analysis, verification and escalation decisions.
 
-- `tickets/INC-002-windows-name-resolution-failure.md`
-- `incidents/INC-002-RCA-windows-name-resolution-failure.md`
-- `kb/KB-002-windows-hostname-connectivity-failure.md`
-
-### INC-003 — Linux systemd service execution failure
-
-Executed on Ubuntu 24.04.5 LTS with a real temporary `systemd` unit.
-
-- reproduced an unavailable application and failed service state
-- confirmed `systemctl is-active` failure and curl connection failure
-- used `systemctl status` to identify `status=203/EXEC`
-- used `journalctl -u` to confirm the main process execution failure
-- inspected the service unit with `systemctl cat`
-- used `ls`, `stat` and `namei` to validate the `ExecStart` path and permissions
-- confirmed `/opt/l2lab/service.sh` was mode `0644` and therefore not executable
-- applied the minimum correction to `0755`
-- restarted the unit and verified it was `active`
-- confirmed `python3` was listening on `127.0.0.1:8090`
-- independently verified the expected HTTP application content
-
-See:
-
-- `tickets/INC-003-linux-systemd-service-failure.md`
-- `incidents/INC-003-RCA-linux-systemd-service-failure.md`
-- `kb/KB-003-systemd-203-exec-service-failure.md`
-
-### INC-004 — Linux disk/storage exhaustion
-
-Executed on Ubuntu 24.04.5 LTS using an isolated 20 MiB temporary filesystem.
-
-- reproduced a real `No space left on device` failure during application startup
-- confirmed the filesystem reached `100%` block utilization
-- checked `df -i` and ruled out inode exhaustion at only `1%` inode use
-- used `du` and `find` to identify an 18 MiB stale application log as the dominant storage consumer
-- connected the storage condition to the failed `systemd` service using `systemctl` and `journalctl`
-- applied an approved minimum cleanup to the confirmed stale log
-- reduced filesystem utilization from `100%` to `25%`
-- verified the 4 MiB runtime cache could be created successfully
-- confirmed the service was active and `python3` listened on `127.0.0.1:8091`
-- independently verified expected HTTP application content
-
-See:
-
-- `tickets/INC-004-linux-disk-exhaustion.md`
-- `incidents/INC-004-RCA-linux-disk-exhaustion.md`
-- `kb/KB-004-linux-disk-full-service-failure.md`
-
-### INC-005 — Scheduled backup environment failure
-
-Executed on Ubuntu 24.04.5 LTS using a real temporary `systemd` timer and oneshot service.
-
-- proved the same backup script succeeded manually when `BACKUP_DEST` was explicitly supplied
-- triggered the scheduled path with `l2backup.timer`
-- reproduced a failed scheduled service and confirmed no archive was created
-- used `systemctl status`, `systemctl list-timers`, `journalctl`, `systemctl cat` and `systemctl show` to compare execution contexts
-- confirmed the service environment did not contain the required `BACKUP_DEST` variable
-- ruled out source/destination permission problems
-- corrected the service with a root-managed `EnvironmentFile`
-- reran the service successfully without changing backup-script logic
-- created and validated the backup archive with SHA-256
-- restored the archive into a separate directory and verified restored data matched the source
-
-See:
-
-- `tickets/INC-005-scheduled-backup-environment-failure.md`
-- `incidents/INC-005-RCA-scheduled-backup-environment-failure.md`
-- `kb/KB-005-systemd-scheduled-job-manual-run-succeeds.md`
-
-### INC-006 — Windows NTFS Access Denied despite correct group membership
-
-Executed on Windows Server 2025 Datacenter using PowerShell and a real local Windows group / NTFS ACL.
-
-- created and verified the `L2-App-Support` local group
-- confirmed the current support account was a member of the group
-- granted the group NTFS `Modify` permission on a protected support directory
-- reproduced a real `Access to the path ... is denied` failure
-- used `whoami`, `Get-LocalGroupMember`, `Get-Acl` and `icacls` to investigate identity and permissions
-- confirmed a direct explicit `ReadData` deny ACE existed on the user while the group retained its allow permission
-- identified ACL precedence as the cause rather than missing group membership
-- removed only the conflicting direct deny ACE
-- preserved the group-based `Modify` grant rather than using a broad `Everyone` or Full Control workaround
-- independently verified protected-file read and write access after remediation
-
-See:
-
-- `tickets/INC-006-windows-ntfs-access-denied.md`
-- `incidents/INC-006-RCA-windows-ntfs-access-denied.md`
-- `kb/KB-006-windows-ntfs-access-denied-group-membership.md`
-
-### INC-007 — Linux SSH public-key authentication failure
-
-Executed on Ubuntu 24.04.5 LTS using a dedicated OpenSSH daemon and temporary support account.
-
-- reproduced `Permission denied (publickey)` with SSH exit code `255`
-- verified `l2sshd.service` was active before changing authentication configuration
-- confirmed `sshd` listened on `127.0.0.1:2222`
-- confirmed TCP connectivity to port 2222 succeeded with `nc`
-- checked firewall state and isolated the fault above the network/service layer
-- used `ssh -vvv` to verify the expected ED25519 key was offered
-- used `sshd -T` to confirm public-key authentication, `StrictModes yes`, and password authentication disabled
-- used `namei` and `stat` to identify `authorized_keys` mode `0666`
-- confirmed the server log reported `Authentication refused: bad ownership or modes`
-- corrected only `authorized_keys` to mode `0600`
-- preserved `StrictModes` and public-key-only authentication
-- verified a fresh SSH connection executed remote commands successfully as `l2support`
-- confirmed the server log changed to `Accepted publickey`
-
-See:
-
-- `tickets/INC-007-linux-ssh-key-authentication-failure.md`
-- `incidents/INC-007-RCA-linux-ssh-key-authentication-failure.md`
-- `kb/KB-007-linux-ssh-publickey-permission-denied.md`
-
-## Truthful CV positioning
-
-Current safe description:
-
-> Built a scenario-driven Windows/Linux L2 technical-support lab using GitHub-hosted environments and structured incident documentation; executed backup/recovery, scheduled-job, Windows name-resolution and NTFS-permissions incidents plus Linux systemd, storage and SSH remote-access failures using Bash, PowerShell, systemctl, journalctl, SSH client/server logs, TCP diagnostics, Get-Acl/icacls, permissions analysis, checksum/restore validation, least-privilege remediation, root-cause analysis and escalation judgement.
-
-Do not describe this repository as production infrastructure experience.
+Do **not** describe this repository as production infrastructure, VMware/Hyper-V, or live Azure administration experience.
