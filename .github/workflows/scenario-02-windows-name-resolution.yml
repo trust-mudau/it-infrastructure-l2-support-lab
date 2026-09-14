@@ -1,0 +1,212 @@
+name: Scenario 02 - Windows Name Resolution Failure
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/scenario-02-windows-name-resolution.yml'
+      - 'tickets/INC-002-windows-name-resolution-failure.md'
+
+jobs:
+  investigate:
+    name: Investigate Windows hostname connectivity failure
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare support scenario
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = 'evidence-runtime/scenario-02'
+          New-Item -ItemType Directory -Force -Path $evidence, 'lab/www' | Out-Null
+          Set-Content -Path 'lab/www/index.html' -Value 'Support application healthy - scenario 02'
+
+          $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+          Copy-Item $hostsPath "$env:RUNNER_TEMP\hosts.original" -Force
+
+          $existing = Get-Content $hostsPath | Where-Object { $_ -notmatch 'support-app\.lab' }
+          $existing | Set-Content $hostsPath
+          Add-Content $hostsPath "127.0.0.2 support-app.lab # L2-LAB-INC002"
+          ipconfig /flushdns | Out-File "$evidence/dns-flush-before.txt"
+
+          $server = Start-Process -FilePath 'python' -ArgumentList @('-m','http.server','8080','--bind','127.0.0.1','--directory','lab/www') -PassThru -WindowStyle Hidden
+          $server.Id | Set-Content "$env:RUNNER_TEMP\scenario02-python.pid"
+          Start-Sleep -Seconds 3
+
+          @(
+            "Scenario prepared: $([DateTime]::UtcNow.ToString('o'))"
+            "Runner OS: $env:RUNNER_OS"
+            "Server PID: $($server.Id)"
+            "Expected service endpoint: 127.0.0.1:8080"
+            "Faulted hostname mapping: support-app.lab -> 127.0.0.2"
+          ) | Set-Content "$evidence/environment.txt"
+
+      - name: Reproduce reported failure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = 'evidence-runtime/scenario-02'
+
+          $direct = Invoke-WebRequest -Uri 'http://127.0.0.1:8080/' -TimeoutSec 5 -NoProxy
+          @(
+            "Direct IP status: $($direct.StatusCode)"
+            "Direct IP content: $($direct.Content.Trim())"
+          ) | Tee-Object -FilePath "$evidence/direct-ip-success.txt"
+
+          $failed = $false
+          try {
+            $response = Invoke-WebRequest -Uri 'http://support-app.lab:8080/' -TimeoutSec 5 -NoProxy
+            "UNEXPECTED SUCCESS: $($response.StatusCode)" | Set-Content "$evidence/hostname-failure.txt"
+          }
+          catch {
+            $failed = $true
+            @(
+              'Hostname request failed as reported.'
+              "Exception type: $($_.Exception.GetType().FullName)"
+              "Message: $($_.Exception.Message)"
+            ) | Tee-Object -FilePath "$evidence/hostname-failure.txt"
+          }
+
+          if (-not $failed) {
+            throw 'Expected hostname request to fail while direct IP access succeeds.'
+          }
+
+      - name: Gather L2 diagnostic evidence
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $evidence = 'evidence-runtime/scenario-02'
+          $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+
+          & {
+            '=== TIMESTAMP ==='
+            [DateTime]::UtcNow.ToString('o')
+            ''
+            '=== WINDOWS / POWERSHELL ==='
+            Get-ComputerInfo | Select-Object WindowsProductName,WindowsVersion,OsBuildNumber | Format-List
+            $PSVersionTable | Out-String
+            ''
+            '=== IP CONFIGURATION ==='
+            Get-NetIPConfiguration | Format-List InterfaceAlias,IPv4Address,IPv4DefaultGateway,DNSServer
+            ''
+            '=== DNS CLIENT SERVERS ==='
+            Get-DnsClientServerAddress -AddressFamily IPv4 | Format-Table -AutoSize
+            ''
+            '=== LISTENING PORT ==='
+            Get-NetTCPConnection -State Listen -LocalPort 8080 | Format-Table -AutoSize
+            ''
+            '=== HOSTS ENTRY ==='
+            Get-Content $hostsPath | Select-String 'support-app.lab'
+            ''
+            '=== STANDARD RESOLVER RESULT ==='
+            [System.Net.Dns]::GetHostAddresses('support-app.lab') | ForEach-Object IPAddressToString
+            ''
+            '=== DIRECT IP PORT TEST ==='
+            Test-NetConnection 127.0.0.1 -Port 8080 -InformationLevel Detailed
+            ''
+            '=== HOSTNAME PORT TEST ==='
+            Test-NetConnection support-app.lab -Port 8080 -InformationLevel Detailed
+            ''
+            '=== FAILED HTTP REQUEST ==='
+            Get-Content "$evidence/hostname-failure.txt"
+          } | Out-File "$evidence/investigation.txt" -Width 220
+
+          Get-Content "$evidence/investigation.txt"
+
+      - name: Apply minimum corrective action
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = 'evidence-runtime/scenario-02'
+          $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+
+          $existing = Get-Content $hostsPath | Where-Object { $_ -notmatch 'support-app\.lab' }
+          $existing | Set-Content $hostsPath
+          Add-Content $hostsPath "127.0.0.1 support-app.lab # L2-LAB-INC002-FIXED"
+          ipconfig /flushdns | Tee-Object -FilePath "$evidence/dns-flush-after.txt"
+
+          @(
+            'Corrective action: replaced incorrect local hostname mapping.'
+            'Before: support-app.lab -> 127.0.0.2'
+            'After:  support-app.lab -> 127.0.0.1'
+            'Resolver cache flushed after change.'
+          ) | Set-Content "$evidence/corrective-action.txt"
+
+      - name: Verify service restoration independently
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = 'evidence-runtime/scenario-02'
+
+          $resolved = [System.Net.Dns]::GetHostAddresses('support-app.lab')
+          $resolvedText = ($resolved | ForEach-Object IPAddressToString) -join ', '
+
+          $portTest = Test-NetConnection support-app.lab -Port 8080 -InformationLevel Detailed
+          if (-not $portTest.TcpTestSucceeded) {
+            throw 'Hostname resolves but TCP validation still fails.'
+          }
+
+          $response = Invoke-WebRequest -Uri 'http://support-app.lab:8080/' -TimeoutSec 5 -NoProxy
+          if ($response.StatusCode -ne 200) {
+            throw "Unexpected HTTP status $($response.StatusCode)"
+          }
+          if ($response.Content -notmatch 'Support application healthy') {
+            throw 'HTTP response did not contain the expected application content.'
+          }
+
+          @(
+            "Resolved address: $resolvedText"
+            "TCP test succeeded: $($portTest.TcpTestSucceeded)"
+            "HTTP status: $($response.StatusCode)"
+            "Application content verified: PASS"
+            "Scenario result: RESOLVED"
+          ) | Tee-Object -FilePath "$evidence/final-verification.txt"
+
+      - name: Write incident summary
+        shell: pwsh
+        run: |
+          @'
+          Incident: INC-002 Windows Application Reachable by IP but Not by Hostname
+          Impact: Users could not access the application by its expected hostname while direct IP access remained healthy.
+          Confirmed root cause: The local hosts configuration resolved support-app.lab to 127.0.0.2 while the healthy service listened on 127.0.0.1:8080.
+          Corrective action: Corrected the hostname mapping to 127.0.0.1 and flushed resolver cache.
+          Verification: Standard resolver returned the correct address, TCP connectivity by hostname passed, and HTTP content returned successfully.
+          Escalation decision: No escalation required after endpoint-local name-resolution configuration was corrected and verified.
+          '@ | Set-Content 'evidence-runtime/scenario-02/incident-summary.txt'
+          Get-Content 'evidence-runtime/scenario-02/incident-summary.txt'
+
+      - name: Add workflow summary
+        shell: pwsh
+        run: |
+          @'
+          ## INC-002 — Windows Name Resolution Failure
+
+          **Target result:** Resolve an application access failure where IP connectivity works but hostname access fails.
+
+          The workflow captures evidence before remediation, validates the listening service and direct-IP path, inspects Windows name resolution, applies a minimum local mapping correction, flushes resolver state and independently verifies TCP and HTTP access by hostname.
+          '@ | Add-Content $env:GITHUB_STEP_SUMMARY
+
+      - name: Upload sanitized scenario evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-02-evidence
+          path: evidence-runtime/scenario-02/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Restore runner hosts file and stop test service
+        if: always()
+        shell: pwsh
+        run: |
+          $hostsPath = "$env:SystemRoot\System32\drivers\etc\hosts"
+          if (Test-Path "$env:RUNNER_TEMP\hosts.original") {
+            Copy-Item "$env:RUNNER_TEMP\hosts.original" $hostsPath -Force
+            ipconfig /flushdns | Out-Null
+          }
+          if (Test-Path "$env:RUNNER_TEMP\scenario02-python.pid") {
+            $serverPid = Get-Content "$env:RUNNER_TEMP\scenario02-python.pid" | Select-Object -First 1
+            Stop-Process -Id $serverPid -Force -ErrorAction SilentlyContinue
+          }
