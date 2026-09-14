@@ -8,6 +8,11 @@ Scenario-driven Windows/Linux technical-support lab built to demonstrate practic
 
 > This is a hands-on portfolio lab, not production employment experience. Cloud and virtualization claims are scoped to exactly what was executed.
 
+## Role-targeted mini-packs
+
+- `projects/greenco-it-support-mini-pack/` — digital-workplace support pack covering Microsoft 365 support workflows, assets, SLA tracking, access reviews, security awareness and ITSM/ITIL-aware documentation.
+- `projects/helpdesk-ticketing-mini-lab/` — 10-ticket first-line helpdesk simulation covering password/account issues, access, software, hardware, connectivity, phishing, L2 escalation, SLA, user communication and closure notes. Zendesk/Freshdesk-style workflow familiarity only; production use is not claimed.
+
 ## Architecture
 
 ```mermaid
@@ -97,11 +102,12 @@ kb/                  reusable knowledge-base articles
 evidence/            evidence policy and sanitized evidence notes
 docs/                lab design and troubleshooting methodology
 scripts/             reusable Bash/PowerShell tooling
-reports/             final technical/job-fit reporting
+projects/             compact role-targeted support scenario packs
+reports/              final technical/job-fit reporting
 ```
 
 ## Truthful portfolio/CV positioning
 
 > Built and validated a 15-incident Windows/Linux L2 technical-support lab using GitHub-hosted environments, covering service and Event Log analysis, TCP/IP/name resolution, SSH, permissions, storage, package dependencies, scheduled tasks, backup/restore, security triage, virtual-disk snapshot recovery and Azure/Bicep network-security configuration; documented each scenario through tickets, root-cause analysis, verification and escalation decisions.
 
-Do **not** describe this repository as production infrastructure, VMware/Hyper-V, or live Azure administration experience.
+Do **not** describe this repository as production infrastructure, VMware/Hyper-V, live Azure administration, or production Zendesk/Freshdesk experience.
