@@ -15,7 +15,8 @@ This repository is designed to build practical troubleshooting evidence for remo
 **Scenario 03:** Linux `systemd` service execution failure — **lab validated and resolved**  
 **Scenario 04:** Linux disk/storage exhaustion — **lab validated and resolved**  
 **Scenario 05:** Scheduled backup environment failure — **lab validated and resolved**  
-**Scenario 06:** Windows NTFS access-denied / ACL conflict — **lab validated and resolved**
+**Scenario 06:** Windows NTFS access-denied / ACL conflict — **lab validated and resolved**  
+**Scenario 07:** Linux SSH public-key authentication failure — **lab validated and resolved**
 
 ## Evidence standard
 
@@ -68,6 +69,7 @@ flowchart TB
 - Linux CLI administration and troubleshooting
 - Windows / PowerShell troubleshooting
 - TCP/IP, DNS and connectivity diagnostics
+- SSH and remote-access troubleshooting
 - Processes and services
 - Logs and event analysis
 - Users, groups and permissions
@@ -107,6 +109,7 @@ templates/           Reusable support-document templates
 | INC-004 | Application fails because filesystem reaches 100% utilization | Linux | df, df -i, du, storage analysis, logs, systemd, recovery | Lab validated |
 | INC-005 | Scheduled backup fails while manual run succeeds | Linux | systemd timers, environment context, backup, integrity, restore testing | Lab validated |
 | INC-006 | Access Denied despite correct support-group membership | Windows | local groups, NTFS ACLs, Get-Acl, icacls, least privilege | Lab validated |
+| INC-007 | SSH public-key authentication fails despite correct key | Linux | SSH, service/port isolation, client debug, server logs, permissions, secure remote access | Lab validated |
 
 Additional scenarios are added only when they are ready to be executed and documented.
 
@@ -251,10 +254,34 @@ See:
 - `incidents/INC-006-RCA-windows-ntfs-access-denied.md`
 - `kb/KB-006-windows-ntfs-access-denied-group-membership.md`
 
+### INC-007 — Linux SSH public-key authentication failure
+
+Executed on Ubuntu 24.04.5 LTS using a dedicated OpenSSH daemon and temporary support account.
+
+- reproduced `Permission denied (publickey)` with SSH exit code `255`
+- verified `l2sshd.service` was active before changing authentication configuration
+- confirmed `sshd` listened on `127.0.0.1:2222`
+- confirmed TCP connectivity to port 2222 succeeded with `nc`
+- checked firewall state and isolated the fault above the network/service layer
+- used `ssh -vvv` to verify the expected ED25519 key was offered
+- used `sshd -T` to confirm public-key authentication, `StrictModes yes`, and password authentication disabled
+- used `namei` and `stat` to identify `authorized_keys` mode `0666`
+- confirmed the server log reported `Authentication refused: bad ownership or modes`
+- corrected only `authorized_keys` to mode `0600`
+- preserved `StrictModes` and public-key-only authentication
+- verified a fresh SSH connection executed remote commands successfully as `l2support`
+- confirmed the server log changed to `Accepted publickey`
+
+See:
+
+- `tickets/INC-007-linux-ssh-key-authentication-failure.md`
+- `incidents/INC-007-RCA-linux-ssh-key-authentication-failure.md`
+- `kb/KB-007-linux-ssh-publickey-permission-denied.md`
+
 ## Truthful CV positioning
 
 Current safe description:
 
-> Built a scenario-driven Windows/Linux L2 technical-support lab using GitHub-hosted environments and structured incident documentation; executed backup/recovery, scheduled-job, Windows name-resolution and NTFS-permissions incidents plus Linux systemd and disk-capacity failures using Bash, PowerShell, systemctl, journalctl, timers, df/du, TCP diagnostics, Get-Acl/icacls, checksum/restore validation, least-privilege remediation, root-cause analysis and escalation judgement.
+> Built a scenario-driven Windows/Linux L2 technical-support lab using GitHub-hosted environments and structured incident documentation; executed backup/recovery, scheduled-job, Windows name-resolution and NTFS-permissions incidents plus Linux systemd, storage and SSH remote-access failures using Bash, PowerShell, systemctl, journalctl, SSH client/server logs, TCP diagnostics, Get-Acl/icacls, permissions analysis, checksum/restore validation, least-privilege remediation, root-cause analysis and escalation judgement.
 
 Do not describe this repository as production infrastructure experience.
