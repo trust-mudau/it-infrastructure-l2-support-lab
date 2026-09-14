@@ -1,0 +1,149 @@
+name: Scenario 12 - Linux Suspicious Process Investigation
+
+on:
+  push:
+    paths:
+      - '.github/workflows/scenario-12-linux-suspicious-process.yml'
+  workflow_dispatch:
+
+jobs:
+  investigate-security:
+    name: Investigate suspicious Linux process and contain it
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare benign suspicious-process scenario
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-12"
+          mkdir -p "$EVIDENCE" /tmp/l2-decoy
+          echo 'sensitive-lab-record' > /tmp/l2-decoy/finance.txt
+          cat > /tmp/.cache-update.py <<'PY'
+          import socket, time, os
+          target='/tmp/l2-decoy/finance.txt'
+          with open(target,'a') as f:
+              f.write('unexpected-change-from-lab-process\n')
+          s=socket.socket()
+          s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          s.bind(('127.0.0.1',4444))
+          s.listen(1)
+          while True:
+              time.sleep(1)
+          PY
+          nohup python3 /tmp/.cache-update.py >/tmp/l2scenario12.out 2>&1 &
+          echo $! > /tmp/l2scenario12.pid
+          sleep 1
+          kill -0 "$(cat /tmp/l2scenario12.pid)"
+
+      - name: Detect anomalous process and file change
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-12"
+          PID="$(cat /tmp/l2scenario12.pid)"
+          if ! grep -q 'unexpected-change-from-lab-process' /tmp/l2-decoy/finance.txt; then
+            echo 'Expected decoy file modification was not observed.' >&2; exit 1
+          fi
+          sudo ss -ltnp | grep ':4444' | tee "$EVIDENCE/detection-port.txt"
+          ps -p "$PID" -o pid,ppid,user,lstart,etime,args | tee "$EVIDENCE/detection-process.txt"
+
+      - name: Gather security triage evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-12"
+          PID="$(cat /tmp/l2scenario12.pid)"
+          {
+            echo '=== PROCESS ==='
+            ps -p "$PID" -o pid,ppid,user,lstart,etime,args
+            echo
+            echo '=== PROCESS TREE ==='
+            pstree -aps "$PID" || true
+            echo
+            echo '=== LISTENING SOCKET ==='
+            sudo ss -ltnp | grep ':4444'
+            echo
+            echo '=== OPEN FILES ==='
+            sudo lsof -p "$PID" || true
+            echo
+            echo '=== EXECUTABLE / CMDLINE ==='
+            readlink -f "/proc/$PID/exe"
+            tr '\0' ' ' < "/proc/$PID/cmdline"; echo
+            echo
+            echo '=== SCRIPT HASH ==='
+            sha256sum /tmp/.cache-update.py
+            echo
+            echo '=== SCRIPT METADATA ==='
+            stat /tmp/.cache-update.py
+            echo
+            echo '=== DECOY FILE METADATA AND CONTENT ==='
+            stat /tmp/l2-decoy/finance.txt
+            cat /tmp/l2-decoy/finance.txt
+          } | tee "$EVIDENCE/investigation.txt"
+          cp /tmp/.cache-update.py "$EVIDENCE/suspicious-script-sanitized.py"
+
+      - name: Contain suspicious process
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-12"
+          PID="$(cat /tmp/l2scenario12.pid)"
+          HASH="$(sha256sum /tmp/.cache-update.py | awk '{print $1}')"
+          kill "$PID"
+          for i in {1..10}; do
+            if ! kill -0 "$PID" 2>/dev/null; then break; fi
+            sleep 0.2
+          done
+          {
+            echo "Contained PID=$PID"
+            echo "Preserved SHA256=$HASH"
+            echo 'Action: terminated the simulated unauthorized process after preserving process, socket, file and hash evidence.'
+            echo 'Production judgement: suspicious execution from /tmp plus an unexpected listener and file modification warrants security escalation after containment.'
+          } | tee "$EVIDENCE/containment.txt"
+
+      - name: Verify containment
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-12"
+          PID="$(cat /tmp/l2scenario12.pid)"
+          if kill -0 "$PID" 2>/dev/null; then echo 'Process still running.' >&2; exit 1; fi
+          if sudo ss -ltnp | grep -q ':4444'; then echo 'Unexpected listener remains.' >&2; exit 1; fi
+          {
+            echo 'Process terminated: PASS'
+            echo 'TCP 4444 listener removed: PASS'
+            echo 'Evidence hash preserved: PASS'
+            echo 'Escalation decision: ESCALATE TO SECURITY / INCIDENT RESPONSE in a production environment.'
+            echo 'Scenario result: CONTAINED AND ESCALATED'
+          } | tee "$EVIDENCE/final-verification.txt"
+
+      - name: Write incident summary
+        shell: bash
+        run: |
+          cat > "$GITHUB_WORKSPACE/evidence-runtime/scenario-12/incident-summary.txt" <<'EOF'
+          Incident: INC-012 Suspicious Linux Process Listening on Unapproved Port
+          Impact: an unexpected process launched from /tmp modified a decoy business file and opened TCP 4444.
+          Investigation: process identity, parentage, command line, executable path, open files, listening socket, file metadata and SHA-256 were captured before containment.
+          Confirmed finding: the simulated unauthorized Python process /tmp/.cache-update.py performed the file modification and owned the 127.0.0.1:4444 listener.
+          Containment: evidence was preserved, the process was terminated, and the listener was verified closed.
+          Escalation decision: escalate to Security/Incident Response in production because unexplained execution from a temporary path plus file modification and an unauthorized listener may indicate compromise. L2 support should not simply delete evidence and close the ticket.
+          EOF
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-12-evidence
+          path: evidence-runtime/scenario-12/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f /tmp/l2scenario12.pid ]]; then kill "$(cat /tmp/l2scenario12.pid)" 2>/dev/null || true; fi
+          rm -rf /tmp/.cache-update.py /tmp/l2-decoy /tmp/l2scenario12.out /tmp/l2scenario12.pid
