@@ -1,0 +1,197 @@
+name: Scenario 14 - Azure NSG Configuration Troubleshooting
+
+on:
+  push:
+    paths:
+      - '.github/workflows/scenario-14-azure-nsg-configuration.yml'
+  workflow_dispatch:
+
+jobs:
+  investigate-azure-config:
+    name: Validate Azure NSG configuration and remediate missing HTTPS rule
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare Azure Bicep scenario
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-14"
+          LAB="$RUNNER_TEMP/scenario14"
+          mkdir -p "$EVIDENCE" "$LAB"
+          if ! command -v az >/dev/null 2>&1; then
+            curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash >/dev/null
+          fi
+          az version | tee "$EVIDENCE/azure-cli-version.txt"
+          az bicep version | tee "$EVIDENCE/bicep-version.txt"
+
+          cat > "$LAB/main.bicep" <<'BICEP'
+          param location string = 'southafricanorth'
+          resource nsg 'Microsoft.Network/networkSecurityGroups@2024-05-01' = {
+            name: 'nsg-support-web'
+            location: location
+            properties: {
+              securityRules: [
+                {
+                  name: 'Allow-SSH-Admin'
+                  properties: {
+                    priority: 100
+                    access: 'Allow'
+                    direction: 'Inbound'
+                    protocol: 'Tcp'
+                    sourcePortRange: '*'
+                    destinationPortRange: '22'
+                    sourceAddressPrefix: '10.10.0.0/24'
+                    destinationAddressPrefix: '*'
+                  }
+                }
+                {
+                  name: 'Deny-All-Inbound'
+                  properties: {
+                    priority: 4096
+                    access: 'Deny'
+                    direction: 'Inbound'
+                    protocol: '*'
+                    sourcePortRange: '*'
+                    destinationPortRange: '*'
+                    sourceAddressPrefix: '*'
+                    destinationAddressPrefix: '*'
+                  }
+                }
+              ]
+            }
+          }
+          BICEP
+          az bicep build --file "$LAB/main.bicep" --outfile "$LAB/main.json"
+          cp "$LAB/main.bicep" "$EVIDENCE/nsg-before.bicep"
+          cp "$LAB/main.json" "$EVIDENCE/nsg-before.json"
+
+      - name: Reproduce configuration-level HTTPS failure
+        shell: bash
+        run: |
+          set +e
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-14"
+          LAB="$RUNNER_TEMP/scenario14"
+          python3 - "$LAB/main.json" > "$EVIDENCE/rule-check-before.txt" 2>&1 <<'PY'
+          import json,sys
+          p=json.load(open(sys.argv[1]))
+          rules=p['resources'][0]['properties']['securityRules']
+          allow443=[r for r in rules if r['properties'].get('direction')=='Inbound' and r['properties'].get('access')=='Allow' and r['properties'].get('protocol') in ('Tcp','*') and r['properties'].get('destinationPortRange') in ('443','*')]
+          print('inbound_allow_443_count=',len(allow443))
+          if not allow443:
+              print('CONFIGURATION FAILURE: no inbound Allow rule permits TCP 443 before the deny-all rule.')
+              raise SystemExit(44)
+          PY
+          RC=$?
+          set -e
+          echo "rule_check_exit=$RC" | tee "$EVIDENCE/failure-code.txt"
+          if [[ $RC -ne 44 ]]; then echo 'Expected missing HTTPS rule was not reproduced.' >&2; exit 1; fi
+
+      - name: Gather cloud configuration evidence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-14"
+          LAB="$RUNNER_TEMP/scenario14"
+          {
+            echo '=== AZURE CLI ==='
+            az version
+            echo
+            echo '=== BICEP SOURCE ==='
+            cat "$LAB/main.bicep"
+            echo
+            echo '=== COMPILED NSG RULES ==='
+            python3 - "$LAB/main.json" <<'PY'
+          import json,sys
+          p=json.load(open(sys.argv[1]))
+          for r in p['resources'][0]['properties']['securityRules']:
+              pr=r['properties']
+              print(r['name'], 'priority='+str(pr['priority']), 'access='+pr['access'], 'direction='+pr['direction'], 'protocol='+pr['protocol'], 'destinationPortRange='+pr['destinationPortRange'], 'source='+pr['sourceAddressPrefix'])
+          PY
+            echo
+            echo '=== FAILED RULE CHECK ==='
+            cat "$EVIDENCE/rule-check-before.txt"
+          } | tee "$EVIDENCE/investigation.txt"
+
+      - name: Correct NSG configuration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-14"
+          LAB="$RUNNER_TEMP/scenario14"
+          python3 - "$LAB/main.bicep" <<'PY'
+          from pathlib import Path
+          import sys
+          p=Path(sys.argv[1])
+          s=p.read_text()
+          marker="""                {
+                  name: 'Deny-All-Inbound'"""
+          rule="""                {
+                  name: 'Allow-HTTPS-Web'
+                  properties: {
+                    priority: 200
+                    access: 'Allow'
+                    direction: 'Inbound'
+                    protocol: 'Tcp'
+                    sourcePortRange: '*'
+                    destinationPortRange: '443'
+                    sourceAddressPrefix: 'Internet'
+                    destinationAddressPrefix: '*'
+                  }
+                }
+"""
+          if marker not in s: raise SystemExit('marker missing')
+          p.write_text(s.replace(marker, rule+marker))
+          PY
+          az bicep build --file "$LAB/main.bicep" --outfile "$LAB/main-fixed.json"
+          cp "$LAB/main.bicep" "$EVIDENCE/nsg-after.bicep"
+          cp "$LAB/main-fixed.json" "$EVIDENCE/nsg-after.json"
+          {
+            echo 'Confirmed root cause: the NSG definition had no inbound Allow rule for TCP 443, so the explicit deny-all rule would block HTTPS.'
+            echo 'Corrective action: added an inbound TCP 443 Allow rule at priority 200 before the deny-all rule.'
+            echo 'Scope note: this is Azure configuration/IaC validation only; no live Azure subscription or production resource was modified.'
+          } | tee "$EVIDENCE/corrective-action.txt"
+
+      - name: Verify corrected Azure configuration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-14"
+          LAB="$RUNNER_TEMP/scenario14"
+          python3 - "$LAB/main-fixed.json" <<'PY' | tee "$EVIDENCE/final-verification.txt"
+          import json,sys
+          p=json.load(open(sys.argv[1]))
+          rules=p['resources'][0]['properties']['securityRules']
+          allow=[r for r in rules if r['name']=='Allow-HTTPS-Web' and r['properties']['access']=='Allow' and r['properties']['direction']=='Inbound' and r['properties']['protocol']=='Tcp' and r['properties']['destinationPortRange']=='443']
+          deny=[r for r in rules if r['name']=='Deny-All-Inbound']
+          assert allow and deny
+          assert allow[0]['properties']['priority'] < deny[0]['properties']['priority']
+          print('Bicep build: PASS')
+          print('HTTPS allow rule present: PASS')
+          print('HTTPS rule evaluated before deny-all by priority: PASS')
+          print('Scenario result: CONFIGURATION RESOLVED')
+          PY
+
+      - name: Write incident summary
+        shell: bash
+        run: |
+          cat > "$GITHUB_WORKSPACE/evidence-runtime/scenario-14/incident-summary.txt" <<'EOF'
+          Incident: INC-014 Azure-Style Web Workload Configuration Missing HTTPS NSG Rule
+          Impact: configuration review showed an Azure NSG would deny inbound HTTPS because only SSH was allowed before an explicit deny-all rule.
+          Environment: Azure CLI and Bicep were used locally on a GitHub-hosted runner. This is configuration-level cloud exposure and not a claim of live Azure administration.
+          Confirmed root cause: no inbound TCP 443 Allow rule existed in the compiled NSG definition.
+          Corrective action: added Allow-HTTPS-Web at priority 200 before Deny-All-Inbound at priority 4096 and rebuilt the Bicep template.
+          Verification: compiled JSON contained the expected HTTPS rule and priority ordering.
+          Escalation decision: a production change would require cloud/network change approval and validation against source restrictions, application architecture and security policy before deployment.
+          EOF
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-14-evidence
+          path: evidence-runtime/scenario-14/
+          if-no-files-found: error
+          retention-days: 30
