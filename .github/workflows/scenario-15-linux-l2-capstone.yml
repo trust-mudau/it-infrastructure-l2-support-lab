@@ -1,0 +1,215 @@
+name: Scenario 15 - Multi-layer L2 Support Capstone
+
+on:
+  push:
+    paths:
+      - '.github/workflows/scenario-15-linux-l2-capstone.yml'
+  workflow_dispatch:
+
+jobs:
+  investigate-capstone:
+    name: Investigate multi-layer Linux service, hostname and backup failures
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare capstone scenario
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-15"
+          mkdir -p "$EVIDENCE"
+          sudo userdel -r l2app 2>/dev/null || true
+          sudo useradd -r -m -d /var/lib/l2app -s /usr/sbin/nologin l2app
+          sudo mkdir -p /srv/l2portal/www /srv/l2portal/config /var/backups/l2portal
+          echo 'portal-status=healthy' | sudo tee /srv/l2portal/www/health.txt >/dev/null
+          echo 'PORT=8095' | sudo tee /srv/l2portal/config/app.env >/dev/null
+          sudo chown -R root:l2app /srv/l2portal
+          sudo chmod 0750 /srv/l2portal/config
+          # Intentional fault 1: service account cannot read its config.
+          sudo chmod 0600 /srv/l2portal/config/app.env
+          # Intentional fault 3: backup destination is not writable by l2app.
+          sudo chown root:l2app /var/backups/l2portal
+          sudo chmod 0550 /var/backups/l2portal
+
+          cat <<'SH' | sudo tee /usr/local/bin/l2portal-start.sh >/dev/null
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          source /srv/l2portal/config/app.env
+          exec python3 -m http.server "$PORT" --bind 127.0.0.1 --directory /srv/l2portal/www
+          SH
+          sudo chmod 0755 /usr/local/bin/l2portal-start.sh
+
+          cat <<'UNIT' | sudo tee /etc/systemd/system/l2portal.service >/dev/null
+          [Unit]
+          Description=L2 Portal Capstone Service
+          After=network.target
+          [Service]
+          Type=simple
+          User=l2app
+          Group=l2app
+          ExecStart=/usr/local/bin/l2portal-start.sh
+          Restart=no
+          [Install]
+          WantedBy=multi-user.target
+          UNIT
+
+          sudo cp /etc/hosts /tmp/l2hosts.original
+          # Intentional fault 2: wrong hostname mapping.
+          echo '127.0.0.2 portal.lab' | sudo tee -a /etc/hosts >/dev/null
+
+          cat <<'SH' | sudo tee /usr/local/bin/l2portal-backup.sh >/dev/null
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          tar -czf /var/backups/l2portal/portal-data.tgz -C /srv/l2portal www config
+          SH
+          sudo chmod 0755 /usr/local/bin/l2portal-backup.sh
+          sudo systemctl daemon-reload
+
+      - name: Reproduce multi-layer incident
+        shell: bash
+        run: |
+          set +e
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-15"
+          sudo systemctl start l2portal.service
+          sleep 1
+          sudo systemctl is-active l2portal.service > "$EVIDENCE/service-before.txt" 2>&1
+          SERVICE_RC=$?
+          curl -sS --connect-timeout 2 http://portal.lab:8095/health.txt > "$EVIDENCE/http-before.txt" 2>&1
+          HTTP_RC=$?
+          sudo -u l2app /usr/local/bin/l2portal-backup.sh > "$EVIDENCE/backup-before.txt" 2>&1
+          BACKUP_RC=$?
+          set -e
+          printf 'service_rc=%s\nhttp_rc=%s\nbackup_rc=%s\n' "$SERVICE_RC" "$HTTP_RC" "$BACKUP_RC" | tee "$EVIDENCE/failure-codes.txt"
+          if [[ $SERVICE_RC -eq 0 || $HTTP_RC -eq 0 || $BACKUP_RC -eq 0 ]]; then
+            echo 'Expected all three capstone faults were not reproduced.' >&2; exit 1
+          fi
+
+      - name: Gather L2 capstone evidence
+        shell: bash
+        run: |
+          set +e
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-15"
+          {
+            echo '=== SERVICE STATUS ==='
+            sudo systemctl status l2portal.service --no-pager -l
+            echo
+            echo '=== SERVICE JOURNAL ==='
+            sudo journalctl -u l2portal.service --no-pager -n 80
+            echo
+            echo '=== SERVICE UNIT ==='
+            sudo systemctl cat l2portal.service
+            echo
+            echo '=== SERVICE ACCOUNT ==='
+            getent passwd l2app
+            id l2app
+            echo
+            echo '=== CONFIG PATH PERMISSIONS ==='
+            sudo namei -l /srv/l2portal/config/app.env
+            sudo stat -c '%A %a %U:%G %n' /srv/l2portal/config /srv/l2portal/config/app.env
+            echo
+            echo '=== HOSTNAME RESOLUTION ==='
+            getent hosts portal.lab
+            grep 'portal.lab' /etc/hosts
+            echo
+            echo '=== PORT STATE ==='
+            sudo ss -ltnp | grep ':8095' || true
+            echo
+            echo '=== BACKUP PATH PERMISSIONS ==='
+            sudo stat -c '%A %a %U:%G %n' /var/backups/l2portal
+            echo
+            echo '=== BACKUP FAILURE ==='
+            cat "$EVIDENCE/backup-before.txt"
+          } | tee "$EVIDENCE/investigation.txt"
+          set -e
+
+      - name: Remediate confirmed faults in sequence
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-15"
+          # Fix 1: allow the service group to read config, without making it world-readable.
+          sudo chown root:l2app /srv/l2portal/config/app.env
+          sudo chmod 0640 /srv/l2portal/config/app.env
+          sudo systemctl start l2portal.service
+          sleep 1
+          sudo systemctl is-active --quiet l2portal.service
+          curl -fsS http://127.0.0.1:8095/health.txt | tee "$EVIDENCE/direct-ip-after-service-fix.txt"
+
+          # Fix 2: replace wrong local hostname mapping with the verified listener address.
+          sudo sed -i '/portal\.lab/d' /etc/hosts
+          echo '127.0.0.1 portal.lab' | sudo tee -a /etc/hosts >/dev/null
+          getent hosts portal.lab | tee "$EVIDENCE/hostname-after.txt"
+          curl -fsS http://portal.lab:8095/health.txt | tee "$EVIDENCE/http-after.txt"
+
+          # Fix 3: grant the service group controlled write access to the backup directory.
+          sudo chmod 0770 /var/backups/l2portal
+          sudo -u l2app /usr/local/bin/l2portal-backup.sh
+          sha256sum /var/backups/l2portal/portal-data.tgz | tee "$EVIDENCE/backup-sha256.txt"
+          mkdir -p /tmp/l2portal-restore
+          tar -xzf /var/backups/l2portal/portal-data.tgz -C /tmp/l2portal-restore
+          diff -r /srv/l2portal/www /tmp/l2portal-restore/www | tee "$EVIDENCE/restore-diff.txt"
+
+          cat > "$EVIDENCE/corrective-actions.txt" <<'EOF'
+          Fault 1: changed app.env from 0600 root:l2app to 0640 root:l2app so the l2app service could read configuration without world access.
+          Fault 2: corrected portal.lab from 127.0.0.2 to the verified listener address 127.0.0.1.
+          Fault 3: changed the backup directory from 0550 to 0770 for root:l2app so the authorized service group could create backups.
+          EOF
+
+      - name: Verify full service restoration
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-15"
+          {
+            echo "service_state=$(sudo systemctl is-active l2portal.service)"
+            echo 'listener:'
+            sudo ss -ltnp | grep ':8095'
+            echo 'hostname:'
+            getent hosts portal.lab
+            echo 'http:'
+            curl -fsS http://portal.lab:8095/health.txt
+            echo 'config_permissions:'
+            sudo stat -c '%a %U:%G %n' /srv/l2portal/config/app.env
+            echo 'backup_permissions:'
+            sudo stat -c '%a %U:%G %n' /var/backups/l2portal
+            echo 'backup_archive:'
+            ls -lh /var/backups/l2portal/portal-data.tgz
+            echo 'restore_check=PASS'
+            echo 'Scenario result: RESOLVED'
+          } | tee "$EVIDENCE/final-verification.txt"
+          grep -q 'portal-status=healthy' "$EVIDENCE/http-after.txt"
+
+      - name: Write incident summary
+        shell: bash
+        run: |
+          cat > "$GITHUB_WORKSPACE/evidence-runtime/scenario-15/incident-summary.txt" <<'EOF'
+          Incident: INC-015 Multi-layer L2 Capstone - Service, Hostname and Backup Failures After Maintenance
+          Impact: a Linux application was unavailable, its support hostname was incorrect, and its backup job could not create an archive.
+          Root causes: (1) l2app could not read app.env because the file was 0600 root:l2app; (2) portal.lab incorrectly mapped to 127.0.0.2 while the application listened on 127.0.0.1; (3) /var/backups/l2portal was 0550 and not writable by l2app.
+          Troubleshooting sequence: isolated service startup first using systemctl/journalctl and path permissions, then validated direct-IP application health before correcting name resolution, then investigated backup permissions separately.
+          Corrective actions: changed app.env to 0640 root:l2app, corrected the host mapping to 127.0.0.1, and granted controlled group write access 0770 to the backup directory.
+          Verification: systemd service active, TCP 8095 listening, portal.lab resolved correctly, HTTP health content passed, backup archive and SHA-256 were created, and a separate restore matched source data.
+          Escalation decision: no escalation required in this controlled lab after all faults were locally attributable and independently verified. In production, unknown post-maintenance configuration drift across multiple controls would justify change-review/escalation if ownership or approved baselines were unclear.
+          EOF
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-15-evidence
+          path: evidence-runtime/scenario-15/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          sudo systemctl stop l2portal.service 2>/dev/null || true
+          sudo rm -f /etc/systemd/system/l2portal.service /usr/local/bin/l2portal-start.sh /usr/local/bin/l2portal-backup.sh
+          sudo systemctl daemon-reload
+          if [[ -f /tmp/l2hosts.original ]]; then sudo cp /tmp/l2hosts.original /etc/hosts; fi
+          sudo rm -rf /srv/l2portal /var/backups/l2portal /tmp/l2portal-restore /tmp/l2hosts.original
+          sudo userdel -r l2app 2>/dev/null || true
