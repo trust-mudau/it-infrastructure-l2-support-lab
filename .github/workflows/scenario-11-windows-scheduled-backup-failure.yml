@@ -1,0 +1,162 @@
+name: Scenario 11 - Windows Scheduled Backup Failure
+
+on:
+  push:
+    paths:
+      - '.github/workflows/scenario-11-windows-scheduled-backup-failure.yml'
+  workflow_dispatch:
+
+jobs:
+  investigate-scheduled-task:
+    name: Investigate Windows scheduled backup failure
+    runs-on: windows-2025
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Prepare scheduled backup scenario
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'C:\l2lab\scenario11'
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-11'
+          New-Item -ItemType Directory -Force -Path $root,$evidence,"$root\source" | Out-Null
+          'finance-record-001' | Set-Content "$root\source\record1.txt"
+          'finance-record-002' | Set-Content "$root\source\record2.txt"
+
+          @'
+          param([string]$BackupRoot)
+          $ErrorActionPreference = 'Stop'
+          $log = 'C:\l2lab\scenario11\task.log'
+          try {
+            if ([string]::IsNullOrWhiteSpace($BackupRoot)) { throw 'BackupRoot parameter is required.' }
+            New-Item -ItemType Directory -Force -Path $BackupRoot | Out-Null
+            $archive = Join-Path $BackupRoot 'scheduled-backup.zip'
+            Compress-Archive -Path 'C:\l2lab\scenario11\source\*' -DestinationPath $archive -Force
+            "SUCCESS archive=$archive" | Set-Content $log
+            exit 0
+          }
+          catch {
+            "ERROR $($_.Exception.Message)" | Set-Content $log
+            exit 23
+          }
+          '@ | Set-Content "$root\backup.ps1"
+
+          Unregister-ScheduledTask -TaskName 'L2ScheduledBackup' -Confirm:$false -ErrorAction SilentlyContinue
+          $pwsh = (Get-Command pwsh).Source
+          $action = New-ScheduledTaskAction -Execute $pwsh -Argument "-NoProfile -File $root\backup.ps1"
+          $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+          Register-ScheduledTask -TaskName 'L2ScheduledBackup' -Action $action -Principal $principal -Description 'Scenario 11 scheduled backup lab' | Out-Null
+
+      - name: Reproduce scheduled task failure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-11'
+          Start-ScheduledTask -TaskName 'L2ScheduledBackup'
+          for ($i=0; $i -lt 30; $i++) {
+            Start-Sleep -Milliseconds 500
+            $info = Get-ScheduledTaskInfo -TaskName 'L2ScheduledBackup'
+            $state = (Get-ScheduledTask -TaskName 'L2ScheduledBackup').State
+            if ($state -ne 'Running' -and $info.LastRunTime -gt [datetime]'2000-01-01') { break }
+          }
+          $info = Get-ScheduledTaskInfo -TaskName 'L2ScheduledBackup'
+          $info | Format-List * | Out-String | Tee-Object -FilePath (Join-Path $evidence 'task-before.txt')
+          Get-Content 'C:\l2lab\scenario11\task.log' | Tee-Object -FilePath (Join-Path $evidence 'task-log-before.txt')
+          if ($info.LastTaskResult -ne 23) { throw "Expected LastTaskResult 23; got $($info.LastTaskResult)." }
+
+      - name: Gather task evidence
+        shell: pwsh
+        run: |
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-11'
+          & {
+            '=== TASK DEFINITION ==='
+            Get-ScheduledTask -TaskName 'L2ScheduledBackup' | Format-List TaskName,State,Description
+            (Get-ScheduledTask -TaskName 'L2ScheduledBackup').Actions | Format-List *
+            ''
+            '=== LAST RUN ==='
+            Get-ScheduledTaskInfo -TaskName 'L2ScheduledBackup' | Format-List *
+            ''
+            '=== SCRIPT LOG ==='
+            Get-Content 'C:\l2lab\scenario11\task.log'
+            ''
+            '=== SOURCE ==='
+            Get-ChildItem 'C:\l2lab\scenario11\source' | Format-Table Name,Length,LastWriteTime
+            ''
+            '=== DESTINATION EXISTS ==='
+            Test-Path 'C:\l2lab\scenario11\backup-destination\scheduled-backup.zip'
+          } | Out-String -Width 220 | Tee-Object -FilePath (Join-Path $evidence 'investigation.txt')
+
+      - name: Correct scheduled action
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-11'
+          $root = 'C:\l2lab\scenario11'
+          $pwsh = (Get-Command pwsh).Source
+          $action = New-ScheduledTaskAction -Execute $pwsh -Argument "-NoProfile -File $root\backup.ps1 -BackupRoot $root\backup-destination"
+          $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+          Register-ScheduledTask -TaskName 'L2ScheduledBackup' -Action $action -Principal $principal -Description 'Scenario 11 scheduled backup lab' -Force | Out-Null
+          @(
+            'Confirmed root cause: the scheduled task launched backup.ps1 without the required BackupRoot parameter.'
+            'Corrective action: updated only the task action to provide the approved backup destination explicitly.'
+          ) | Set-Content (Join-Path $evidence 'corrective-action.txt')
+
+      - name: Verify scheduled backup and restore
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $evidence = Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-11'
+          $root = 'C:\l2lab\scenario11'
+          Start-ScheduledTask -TaskName 'L2ScheduledBackup'
+          for ($i=0; $i -lt 30; $i++) {
+            Start-Sleep -Milliseconds 500
+            $info = Get-ScheduledTaskInfo -TaskName 'L2ScheduledBackup'
+            $state = (Get-ScheduledTask -TaskName 'L2ScheduledBackup').State
+            if ($state -ne 'Running' -and $info.LastRunTime -gt [datetime]'2000-01-01') { break }
+          }
+          $info = Get-ScheduledTaskInfo -TaskName 'L2ScheduledBackup'
+          if ($info.LastTaskResult -ne 0) { throw "Scheduled task still failed: $($info.LastTaskResult)" }
+          $archive = "$root\backup-destination\scheduled-backup.zip"
+          if (-not (Test-Path $archive)) { throw 'Backup archive missing.' }
+          $hash = Get-FileHash $archive -Algorithm SHA256
+          New-Item -ItemType Directory -Force -Path "$root\restore" | Out-Null
+          Expand-Archive -Path $archive -DestinationPath "$root\restore" -Force
+          $src = Get-ChildItem "$root\source" -File | Sort-Object Name
+          $dst = Get-ChildItem "$root\restore" -File | Sort-Object Name
+          if (($src.Name -join ',') -ne ($dst.Name -join ',')) { throw 'Restore file list does not match source.' }
+          & {
+            "LastTaskResult=$($info.LastTaskResult)"
+            "Archive=$archive"
+            "SHA256=$($hash.Hash)"
+            'Restore file list: PASS'
+            'Scenario result: RESOLVED'
+          } | Tee-Object -FilePath (Join-Path $evidence 'final-verification.txt')
+
+      - name: Write incident summary
+        shell: pwsh
+        run: |
+          @'
+          Incident: INC-011 Windows Scheduled Backup Fails While Source Data Is Healthy
+          Impact: a scheduled backup task ran but produced no archive and returned a non-zero task result.
+          Confirmed root cause: the scheduled task action omitted the required BackupRoot parameter, causing backup.ps1 to exit with code 23.
+          Corrective action: updated the scheduled action to pass the managed backup destination explicitly.
+          Verification: LastTaskResult returned 0, the ZIP archive was created, SHA-256 was calculated, and a separate restore reproduced the expected source files.
+          Escalation decision: no escalation required because task definition ownership was local and the fix did not require weakening security or changing source data.
+          '@ | Set-Content (Join-Path $env:GITHUB_WORKSPACE 'evidence-runtime/scenario-11/incident-summary.txt')
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-11-evidence
+          path: evidence-runtime/scenario-11/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup
+        if: always()
+        shell: pwsh
+        run: |
+          Unregister-ScheduledTask -TaskName 'L2ScheduledBackup' -Confirm:$false -ErrorAction SilentlyContinue
+          Remove-Item 'C:\l2lab\scenario11' -Recurse -Force -ErrorAction SilentlyContinue
