@@ -1,0 +1,11 @@
+ticket_id,category,priority,status,sla_hours,outcome,escalation_target
+TKT-001,Password reset,P3,Resolved,8,Resolved,None
+TKT-002,Locked account,P2,Resolved,4,Resolved,None
+TKT-003,Access issue,P2,Resolved,4,Resolved,None
+TKT-004,Software failure,P3,Resolved,8,Resolved,None
+TKT-005,Hardware peripheral,P3,Resolved,8,Resolved,None
+TKT-006,Networking connectivity,P2,Resolved,4,Resolved,None
+TKT-007,Phishing security,P1,Escalated,1,Escalated,Security IR
+TKT-008,Application failure,P2,Escalated,4,Escalated,L2 Application Support
+TKT-009,Printer peripheral,P3,Resolved,8,Resolved,None
+TKT-010,Onboarding access,P3,Resolved,8,Resolved,None

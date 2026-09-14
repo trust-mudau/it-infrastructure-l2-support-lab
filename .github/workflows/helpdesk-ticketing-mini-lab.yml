@@ -1,0 +1,17 @@
+name: Helpdesk Ticketing Mini-Lab Validation
+
+on:
+  push:
+    paths:
+      - 'projects/helpdesk-ticketing-mini-lab/**'
+      - '.github/workflows/helpdesk-ticketing-mini-lab.yml'
+  workflow_dispatch:
+
+jobs:
+  validate-ticket-workflow:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Validate helpdesk tickets
+        run: python projects/helpdesk-ticketing-mini-lab/scripts/validate_tickets.py
