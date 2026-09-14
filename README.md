@@ -11,7 +11,8 @@ This repository is designed to build practical troubleshooting evidence for remo
 **Phase:** Active scenario execution  
 **Platform baseline:** Windows and Linux hosted-runner capture — executed successfully  
 **Scenario 01:** Linux backup permission failure — **lab validated and resolved**  
-**Scenario 02:** Windows hostname/name-resolution failure — **lab validated and resolved**
+**Scenario 02:** Windows hostname/name-resolution failure — **lab validated and resolved**  
+**Scenario 03:** Linux `systemd` service execution failure — **lab validated and resolved**
 
 ## Evidence standard
 
@@ -99,6 +100,7 @@ templates/           Reusable support-document templates
 | BASELINE | Windows/Linux support baseline | Windows + Linux | OS, IP, DNS, storage, services | Executed |
 | INC-001 | Backup job fails because destination is not writable | Linux | Bash, permissions, logs, backup/recovery, RCA | Lab validated |
 | INC-002 | Application works by IP but fails by hostname | Windows | PowerShell, TCP/IP, name resolution, service validation | Lab validated |
+| INC-003 | systemd service fails with `203/EXEC` | Linux | systemd, journalctl, processes, permissions, sockets, service recovery | Lab validated |
 
 Additional scenarios are added only when they are ready to be executed and documented.
 
@@ -158,10 +160,32 @@ See:
 - `incidents/INC-002-RCA-windows-name-resolution-failure.md`
 - `kb/KB-002-windows-hostname-connectivity-failure.md`
 
+### INC-003 — Linux systemd service execution failure
+
+Executed on Ubuntu 24.04.5 LTS with a real temporary `systemd` unit.
+
+- reproduced an unavailable application and failed service state
+- confirmed `systemctl is-active` failure and curl connection failure
+- used `systemctl status` to identify `status=203/EXEC`
+- used `journalctl -u` to confirm the main process execution failure
+- inspected the service unit with `systemctl cat`
+- used `ls`, `stat` and `namei` to validate the `ExecStart` path and permissions
+- confirmed `/opt/l2lab/service.sh` was mode `0644` and therefore not executable
+- applied the minimum correction to `0755`
+- restarted the unit and verified it was `active`
+- confirmed `python3` was listening on `127.0.0.1:8090`
+- independently verified the expected HTTP application content
+
+See:
+
+- `tickets/INC-003-linux-systemd-service-failure.md`
+- `incidents/INC-003-RCA-linux-systemd-service-failure.md`
+- `kb/KB-003-systemd-203-exec-service-failure.md`
+
 ## Truthful CV positioning
 
 Current safe description:
 
-> Built a scenario-driven Windows/Linux L2 technical-support lab using GitHub-hosted environments and structured incident documentation; executed backup/recovery and Windows name-resolution incidents using Bash, PowerShell, TCP diagnostics, permissions analysis, integrity testing, root-cause analysis and escalation judgement.
+> Built a scenario-driven Windows/Linux L2 technical-support lab using GitHub-hosted environments and structured incident documentation; executed backup/recovery, Windows name-resolution and Linux systemd service incidents using Bash, PowerShell, systemctl, journalctl, TCP diagnostics, permissions analysis, integrity testing, root-cause analysis and escalation judgement.
 
 Do not describe this repository as production infrastructure experience.
