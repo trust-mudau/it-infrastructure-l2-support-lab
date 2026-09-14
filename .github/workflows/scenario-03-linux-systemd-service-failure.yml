@@ -21,7 +21,8 @@ jobs:
         run: |
           set -Eeuo pipefail
           EVIDENCE="$GITHUB_WORKSPACE/evidence-runtime/scenario-03"
-          sudo mkdir -p /opt/l2lab/www "$EVIDENCE"
+          sudo mkdir -p /opt/l2lab/www
+          mkdir -p "$EVIDENCE"
           printf 'L2 support application healthy - scenario 03\n' | sudo tee /opt/l2lab/www/index.html >/dev/null
 
           cat <<'SCRIPT' | sudo tee /opt/l2lab/service.sh >/dev/null
